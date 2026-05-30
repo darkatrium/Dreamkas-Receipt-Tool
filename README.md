@@ -12,7 +12,7 @@
 так же может работать и с другими типами касс компании Dreamkas
 
 Страница кассы:
-[**Dreamkas-Ф**](https://dreamkas.ru/kassy-dreamkas/dreamkas-f/ple.com)
+[**Dreamkas-Ф**](https://dreamkas.ru/kassy-dreamkas/dreamkas-f/ple.com).
 
 
 

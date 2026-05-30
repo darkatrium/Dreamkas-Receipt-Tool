@@ -1,0 +1,237 @@
+Dreamkas Receipt Tool — настройка SMTP и зашифрованного SMTP-пароля
+
+Что изменилось в v6.3
+=====================
+
+SMTP-пароль больше не надо хранить в settings.txt в открытом виде.
+Теперь используется:
+
+SMTP_PASSWORD_ENC = enc-v1:...
+
+Пароль шифруется ключом, который вычисляется из DREAMKAS_TOKEN.
+Это сделано специально, чтобы рабочую папку можно было переносить целиком
+на другой компьютер вместе с settings.txt.
+
+Важное ограничение безопасности
+===============================
+
+Так как DREAMKAS_TOKEN тоже лежит в settings.txt, человек, который получил
+весь settings.txt, теоретически сможет расшифровать SMTP_PASSWORD_ENC.
+
+То есть это защита:
+- от случайного просмотра пароля;
+- от скриншота настроек;
+- от ситуации, когда кто-то открыл файл и увидел пароль глазами.
+
+Но это не защита от полной кражи settings.txt.
+Поэтому settings.txt всё равно нельзя отправлять посторонним.
+
+Как ввести SMTP-пароль
+======================
+
+В settings.txt НЕ пишите строку:
+
+SMTP_PASSWORD = мой_пароль
+
+Вместо этого заполните обычные SMTP-настройки:
+
+EMAIL_ENABLED_AFTER_SUCCESS = 1
+SMTP_HOST = mail.teakett.ru
+SMTP_PORT = 465
+SMTP_USER = receipt@teakett.ru
+SMTP_PASSWORD_ENC = 
+SMTP_FROM = receipt@teakett.ru
+SMTP_SSL = 1
+SMTP_STARTTLS = 0
+SMTP_VERIFY_CERT = 1
+
+После этого запустите:
+
+test_smtp.bat
+
+или:
+
+C:\Python314\python.exe test_smtp.py --to client@example.ru
+
+Если SMTP_PASSWORD_ENC пустой, программа спросит:
+
+SMTP_PASSWORD:
+
+После ввода пароль будет зашифрован и сохранен в settings.txt как:
+
+SMTP_PASSWORD_ENC = enc-v1:...
+
+Старое открытое поле SMTP_PASSWORD
+==================================
+
+Если в старом settings.txt уже была строка:
+
+SMTP_PASSWORD = старый_пароль
+
+v6.3 при первом использовании SMTP автоматически перенесет его в:
+
+SMTP_PASSWORD_ENC = enc-v1:...
+
+и уберет SMTP_PASSWORD из settings.txt.
+
+Что будет, если токен Dreamkas отозвали
+=======================================
+
+При запуске основной программы скрипт проверяет токен запросом к Dreamkas API,
+когда загружает список магазинов.
+
+Если Dreamkas вернет 401/403, то программа:
+
+1. удалит SMTP_HOST / SMTP_USER / SMTP_PASSWORD_ENC и остальные SMTP_* настройки;
+2. поставит EMAIL_ENABLED_AFTER_SUCCESS = 0;
+3. сохранит settings.txt;
+4. остановит работу.
+
+Это сделано по твоей логике: если токен недействителен, привязанный к нему
+зашифрованный SMTP-пароль больше не считаем рабочим/доверенным.
+
+SMTP_VERIFY_CERT
+================
+
+Обычный безопасный режим:
+
+SMTP_VERIFY_CERT = 1
+
+Если на сервере BrainyCP/Exim кривой или самоподписанный сертификат SMTP,
+может появиться ошибка:
+
+CERTIFICATE_VERIFY_FAILED
+unable to get local issuer certificate
+
+Для временного теста можно поставить:
+
+SMTP_VERIFY_CERT = 0
+
+Но это аварийный режим. Лучше починить SSL-сертификат на mail.teakett.ru.
+
+Примеры настроек
+================
+
+BrainyCP / собственный сервер, порт 465 SSL
+-------------------------------------------
+
+EMAIL_ENABLED_AFTER_SUCCESS = 1
+SMTP_HOST = mail.teakett.ru
+SMTP_PORT = 465
+SMTP_USER = receipt@teakett.ru
+SMTP_PASSWORD_ENC = 
+SMTP_FROM = receipt@teakett.ru
+SMTP_SSL = 1
+SMTP_STARTTLS = 0
+SMTP_VERIFY_CERT = 1
+
+Если сертификат пока не починен, временно:
+
+SMTP_VERIFY_CERT = 0
+
+BrainyCP / собственный сервер, порт 587 STARTTLS
+------------------------------------------------
+
+EMAIL_ENABLED_AFTER_SUCCESS = 1
+SMTP_HOST = mail.teakett.ru
+SMTP_PORT = 587
+SMTP_USER = receipt@teakett.ru
+SMTP_PASSWORD_ENC = 
+SMTP_FROM = receipt@teakett.ru
+SMTP_SSL = 0
+SMTP_STARTTLS = 1
+SMTP_VERIFY_CERT = 1
+
+Яндекс Почта / Яндекс 360, SSL 465
+----------------------------------
+
+EMAIL_ENABLED_AFTER_SUCCESS = 1
+SMTP_HOST = smtp.yandex.ru
+SMTP_PORT = 465
+SMTP_USER = your_login@yandex.ru
+SMTP_PASSWORD_ENC = 
+SMTP_FROM = your_login@yandex.ru
+SMTP_SSL = 1
+SMTP_STARTTLS = 0
+SMTP_VERIFY_CERT = 1
+
+Mail.ru, SSL 465
+----------------
+
+EMAIL_ENABLED_AFTER_SUCCESS = 1
+SMTP_HOST = smtp.mail.ru
+SMTP_PORT = 465
+SMTP_USER = your_login@mail.ru
+SMTP_PASSWORD_ENC = 
+SMTP_FROM = your_login@mail.ru
+SMTP_SSL = 1
+SMTP_STARTTLS = 0
+SMTP_VERIFY_CERT = 1
+
+Gmail / Google Workspace, SSL 465
+---------------------------------
+
+EMAIL_ENABLED_AFTER_SUCCESS = 1
+SMTP_HOST = smtp.gmail.com
+SMTP_PORT = 465
+SMTP_USER = your_login@gmail.com
+SMTP_PASSWORD_ENC = 
+SMTP_FROM = your_login@gmail.com
+SMTP_SSL = 1
+SMTP_STARTTLS = 0
+SMTP_VERIFY_CERT = 1
+
+Частые ошибки
+=============
+
+1. Cannot decrypt SMTP_PASSWORD_ENC
+-----------------------------------
+
+Причины:
+- изменился DREAMKAS_TOKEN;
+- SMTP_PASSWORD_ENC скопирован от другого settings.txt;
+- строка SMTP_PASSWORD_ENC повреждена.
+
+Что делать:
+- очистить SMTP_PASSWORD_ENC =
+- снова запустить test_smtp.bat
+- ввести SMTP-пароль заново
+
+2. CERTIFICATE_VERIFY_FAILED
+----------------------------
+
+Причина:
+- SMTP-сервер отдает сертификат с неполной цепочкой или не на то имя.
+
+Что делать:
+- лучше установить нормальный SSL на mail.teakett.ru;
+- временно можно поставить SMTP_VERIFY_CERT = 0.
+
+3. Spamhaus / blacklist
+-----------------------
+
+Это не ошибка скрипта. Это SMTP-сервер отклоняет подключение/отправку из-за IP.
+На BrainyCP/Exim лучше настроить так, чтобы RBL/Spamhaus не блокировал
+авторизованных SMTP-пользователей после успешной SMTP AUTH.
+
+4. Authentication failed
+------------------------
+
+Причины:
+- неверный пароль;
+- нужен пароль приложения;
+- неверный SMTP_USER;
+- ящик не существует.
+
+Что делать:
+- очистить SMTP_PASSWORD_ENC;
+- проверить SMTP_USER;
+- снова запустить test_smtp.bat и ввести пароль.
+
+Рекомендации
+============
+
+1. Не отправляйте settings.txt посторонним.
+2. Не присылайте DREAMKAS_TOKEN и SMTP_PASSWORD_ENC в чат.
+3. Для чеков лучше создать отдельный ящик, например receipt@teakett.ru.
+4. Если токен Dreamkas меняется, SMTP_PASSWORD_ENC нужно создать заново.

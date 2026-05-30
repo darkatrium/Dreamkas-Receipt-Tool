@@ -1,0 +1,135 @@
+DREAMKAS_TOKEN = 
+SHOP_ID = 
+SHOP_NAME = 
+DEVICE_ID = 
+DEVICE_NAME = 
+
+API_BASE_URL = https://kabinet.dreamkas.ru/api
+OPERATION_TYPE = SALE
+TIMEOUT_MINUTES = 5
+POLL_INTERVAL_SECONDS = 20
+REQUEST_TIMEOUT_SECONDS = 30
+
+# ------------------------------------------------------------
+# Duplicate protection
+# ------------------------------------------------------------
+# Program stores full precheck data in SQLite and compares new checks with saved snapshots.
+DUPLICATE_WINDOW_MINUTES = 10
+DUPLICATE_LOOKBACK_DAYS = 30
+
+# ------------------------------------------------------------
+# Excel cleanup
+# ------------------------------------------------------------
+# 1 = clear Excel template after successful SALE fiscalization
+# 0 = do not clear Excel
+CLEAR_EXCEL_AFTER_SUCCESS = 1
+
+# ------------------------------------------------------------
+# PDF receipt generation
+# ------------------------------------------------------------
+PDF_ENABLED = 1
+
+# ------------------------------------------------------------
+# Email sending via SMTP
+# ------------------------------------------------------------
+# 0 = disabled
+# 1 = send email to buyer after successful fiscalization, if buyer email is filled in Excel
+EMAIL_ENABLED_AFTER_SUCCESS = 0
+
+# Main SMTP settings
+SMTP_HOST = 
+SMTP_PORT = 465
+SMTP_USER = 
+# SMTP password is NOT stored in plain text.
+# The program asks for SMTP_PASSWORD once and saves encrypted value here.
+# Encryption key is derived from DREAMKAS_TOKEN, so the folder is portable.
+SMTP_PASSWORD_ENC = 
+SMTP_FROM = 
+
+# Encryption mode:
+# For port 465 usually:
+# SMTP_SSL = 1
+# SMTP_STARTTLS = 0
+#
+# For port 587 usually:
+# SMTP_SSL = 0
+# SMTP_STARTTLS = 1
+SMTP_SSL = 1
+SMTP_STARTTLS = 0
+
+# Certificate verification:
+# 1 = normal secure mode
+# 0 = emergency mode for self-signed/broken SMTP certificates
+SMTP_VERIFY_CERT = 1
+
+# ------------------------------------------------------------
+# SMTP examples
+# ------------------------------------------------------------
+# In examples below do not write SMTP_PASSWORD manually.
+# Run test_smtp.bat or configure SMTP in program menu, then enter password once.
+# It will be saved as SMTP_PASSWORD_ENC.
+
+# === Your BrainyCP server, SSL 465 ===
+# EMAIL_ENABLED_AFTER_SUCCESS = 1
+# SMTP_HOST = mail.teakett.ru
+# SMTP_PORT = 465
+# SMTP_USER = receipt@teakett.ru
+# SMTP_FROM = receipt@teakett.ru
+# SMTP_SSL = 1
+# SMTP_STARTTLS = 0
+# SMTP_VERIFY_CERT = 1
+
+# === Your BrainyCP server, STARTTLS 587 ===
+# EMAIL_ENABLED_AFTER_SUCCESS = 1
+# SMTP_HOST = mail.teakett.ru
+# SMTP_PORT = 587
+# SMTP_USER = receipt@teakett.ru
+# SMTP_FROM = receipt@teakett.ru
+# SMTP_SSL = 0
+# SMTP_STARTTLS = 1
+# SMTP_VERIFY_CERT = 1
+
+# === BrainyCP emergency mode if certificate chain is broken ===
+# Use only temporarily. Better fix SSL certificate on mail.teakett.ru.
+# SMTP_VERIFY_CERT = 0
+
+# === Yandex Mail / Yandex 360, SSL 465 ===
+# EMAIL_ENABLED_AFTER_SUCCESS = 1
+# SMTP_HOST = smtp.yandex.ru
+# SMTP_PORT = 465
+# SMTP_USER = your_login@yandex.ru
+# SMTP_FROM = your_login@yandex.ru
+# SMTP_SSL = 1
+# SMTP_STARTTLS = 0
+# SMTP_VERIFY_CERT = 1
+
+# === Mail.ru, SSL 465 ===
+# EMAIL_ENABLED_AFTER_SUCCESS = 1
+# SMTP_HOST = smtp.mail.ru
+# SMTP_PORT = 465
+# SMTP_USER = your_login@mail.ru
+# SMTP_FROM = your_login@mail.ru
+# SMTP_SSL = 1
+# SMTP_STARTTLS = 0
+# SMTP_VERIFY_CERT = 1
+
+# === Gmail / Google Workspace, SSL 465 ===
+# EMAIL_ENABLED_AFTER_SUCCESS = 1
+# SMTP_HOST = smtp.gmail.com
+# SMTP_PORT = 465
+# SMTP_USER = your_login@gmail.com
+# SMTP_FROM = your_login@gmail.com
+# SMTP_SSL = 1
+# SMTP_STARTTLS = 0
+# SMTP_VERIFY_CERT = 1
+
+# More details:
+# See SMTP_SETUP.txt
+
+
+# ------------------------------------------------------------
+# Cashier note
+# ------------------------------------------------------------
+# Cashier name is read from Excel and saved locally in SQLite/TXT/PDF.
+# It is NOT sent to Dreamkas /api/receipts, because API rejects "cashier".
+# If your fiscal receipt shows "Администратор", configure cashier in Dreamkas/KKT.

@@ -1,36 +1,32 @@
 @echo off
 setlocal EnableExtensions
-title Build Dreamkas EXE
+title Install Python for Dreamkas
 cd /d "%~dp0"
+
+echo ==========================================
+echo       Install Python for Dreamkas
+echo ==========================================
+echo.
 
 call :ensure_python
 if errorlevel 1 goto fail
 
+echo.
+echo Python is ready:
+echo %PYTHON_CMD%
+echo.
+
 call :ensure_pip
 if errorlevel 1 goto fail
 
-echo Installing build dependencies...
-%PYTHON_CMD% -m pip install -r requirements.txt
-if errorlevel 1 goto fail
-
 echo.
-echo Building console EXE...
-%PYTHON_CMD% -m PyInstaller --onefile --name DreamkasReceipt --add-data "dreamkas_receipt_template.xlsx;." dreamkas_receipt.py
-if errorlevel 1 goto fail
-
-echo.
-echo Building GUI EXE...
-%PYTHON_CMD% -m PyInstaller --onefile --windowed --name DreamkasReceiptGUI --add-data "dreamkas_receipt_template.xlsx;." dreamkas_gui.py
-if errorlevel 1 goto fail
-
-echo.
-echo Done. EXE files are in the dist folder.
+echo Python and pip are ready.
 pause
 exit /b 0
 
 :fail
 echo.
-echo ERROR: Build failed.
+echo ERROR: Python installation/check failed.
 pause
 exit /b 1
 

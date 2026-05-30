@@ -6,7 +6,7 @@
 
 ---
 
-**Current version / Актуальная версия:** v6.6
+**Current version / Актуальная версия:** v6.9
 
 ---
 
@@ -35,6 +35,8 @@
 - Выбор кассы из Dreamkas API.
 - Заполнение чека через Excel-шаблон.
 - Автоматическое открытие Excel-шаблона перед созданием чека.
+- Автоматическое восстановление или создание Excel-шаблона, если файл отсутствует.
+- Встраивание Excel-шаблона внутрь EXE при сборке.
 - Предпросмотр чека в терминале перед отправкой.
 - Отправка задания на фискализацию в Dreamkas.
 - Ожидание результата операции.
@@ -49,11 +51,12 @@
 - Зашифрованное хранение SMTP-пароля в `settings.txt`.
 - Логирование запросов, ответов и ошибок.
 - Проверка и автоматическая установка зависимостей при запуске.
+- Автоматическое восстановление `pip` через `ensurepip` или `get-pip.py`.
+- Диагностика установленного Python через `diagnose_python.bat`.
 - Простая GUI-оболочка для запуска утилиты и открытия рабочих папок.
 - Сборка в EXE через PyInstaller.
 
 ---
-
 
 ## Что добавлено в актуальной версии
 
@@ -62,8 +65,12 @@
 - Если шаблона нет, программа восстанавливает его из встроенного ресурса EXE.
 - Если встроенный ресурс недоступен, программа создаёт новый Excel-шаблон программно.
 - GUI-оболочка также умеет восстанавливать или создавать Excel-шаблон.
-- `build_exe.bat` обновлён и добавляет Excel-шаблон в EXE через параметр `--add-data`.
-- Программа стала удобнее для переноса: EXE можно запускать в новой папке без ручного копирования Excel-шаблона.
+- `build_exe.bat` добавляет Excel-шаблон в EXE через параметр `--add-data`.
+- `start_dreamkas.bat`, `start_gui.bat`, `install_dependencies.bat` и `build_exe.bat` проверяют наличие `pip`.
+- Если `pip` отсутствует, BAT-файлы пробуют восстановить его через `ensurepip`.
+- Если `ensurepip` недоступен или не сработал, BAT-файлы скачивают официальный `get-pip.py` и устанавливают `pip`.
+- Добавлен `diagnose_python.bat` для диагностики Python, `pip`, `ensurepip` и импортов зависимостей.
+- EXE можно запускать в новой папке без ручного копирования Excel-шаблона.
 
 ---
 
@@ -169,6 +176,39 @@ CLEAR_EXCEL_AFTER_SUCCESS = 0
 
 ---
 
+## Встроенный Excel-шаблон для EXE
+
+При обычном запуске из исходников рядом с программой используется файл:
+
+```text
+dreamkas_receipt_template.xlsx
+```
+
+При сборке в EXE шаблон Excel дополнительно встраивается внутрь исполняемого файла как ресурс PyInstaller.
+
+При запуске программа проверяет наличие файла:
+
+```text
+dreamkas_receipt_template.xlsx
+```
+
+рядом с программой или EXE.
+
+Если файл найден — используется он.
+
+Если файл не найден, программа автоматически:
+
+```text
+1. пробует восстановить dreamkas_receipt_template.xlsx из встроенного ресурса EXE;
+2. если встроенный ресурс недоступен — создаёт новый Excel-шаблон программно.
+```
+
+Таким образом, EXE можно перенести в новую папку и запустить даже без заранее скопированного Excel-шаблона. Шаблон будет создан автоматически при первом запуске.
+
+Это работает как для основной консольной программы, так и для GUI-оболочки.
+
+---
+
 ## Имя кассира
 
 Имя кассира указывается в Excel и сохраняется локально:
@@ -195,11 +235,13 @@ requirements.txt                 зависимости Python
 start_dreamkas.bat               запуск основной программы
 start_gui.bat                    запуск GUI-оболочки
 install_dependencies.bat         установка зависимостей
+diagnose_python.bat              диагностика Python и pip
 test_smtp.py                     проверка SMTP
 test_smtp.bat                    запуск SMTP-теста
 build_exe.bat                    сборка EXE через PyInstaller
 SMTP_SETUP.txt                   инструкция по SMTP
 README.md                        описание проекта
+CHANGELOG.md                     список изменений
 ```
 
 Во время работы программа создаёт папки:
@@ -251,6 +293,30 @@ install_dependencies.bat
 ```bat
 python -m pip install -r requirements.txt
 ```
+
+---
+
+## Восстановление pip
+
+Если Python установлен без `pip`, BAT-файлы сначала пробуют:
+
+```bat
+python -m ensurepip --upgrade
+```
+
+Если `ensurepip` недоступен или завершился ошибкой, BAT автоматически скачивает и запускает официальный bootstrap-скрипт:
+
+```text
+https://bootstrap.pypa.io/get-pip.py
+```
+
+Также добавлен файл:
+
+```text
+diagnose_python.bat
+```
+
+Он показывает активный путь Python, доступные версии Python, состояние `ensurepip`, состояние `pip` и проверку импортов зависимостей.
 
 ---
 
@@ -531,42 +597,6 @@ GUI позволяет:
 
 ---
 
-
-## Встроенный Excel-шаблон для EXE
-
-При обычном запуске из исходников рядом с программой используется файл:
-
-```text
-dreamkas_receipt_template.xlsx
-```
-
-При сборке в EXE шаблон Excel дополнительно встраивается внутрь исполняемого файла как ресурс PyInstaller.
-
-Это решает проблему, когда пользователь запускает `DreamkasReceipt.exe`, а Excel-шаблон не лежит рядом с EXE.
-
-При запуске программа проверяет наличие файла:
-
-```text
-dreamkas_receipt_template.xlsx
-```
-
-рядом с программой или EXE.
-
-Если файл найден — используется он.
-
-Если файл не найден, программа автоматически:
-
-```text
-1. пробует восстановить dreamkas_receipt_template.xlsx из встроенного ресурса EXE;
-2. если встроенный ресурс недоступен — создаёт новый Excel-шаблон программно.
-```
-
-Таким образом, EXE можно перенести в новую папку и запустить даже без заранее скопированного Excel-шаблона. Шаблон будет создан автоматически при первом запуске.
-
-Это работает как для основной консольной программы, так и для GUI-оболочки.
-
----
-
 ## Сборка в EXE
 
 Для сборки используется PyInstaller:
@@ -575,7 +605,7 @@ dreamkas_receipt_template.xlsx
 build_exe.bat
 ```
 
-Файл `build_exe.bat` собирает консольную и GUI-версии, а также встраивает Excel-шаблон внутрь EXE через PyInstaller:
+`build_exe.bat` собирает консольную и GUI-версии, а также встраивает Excel-шаблон внутрь EXE через PyInstaller:
 
 ```bat
 --add-data "dreamkas_receipt_template.xlsx;."
@@ -603,7 +633,6 @@ settings.txt
 Excel-шаблон `dreamkas_receipt_template.xlsx` можно положить рядом с EXE вручную, но это не обязательно. Если шаблона рядом нет, программа восстановит его из встроенного ресурса EXE или создаст новый шаблон автоматически.
 
 ---
-
 
 ## Безопасность и GitHub
 
@@ -642,6 +671,44 @@ build/
 
 ---
 
+
+## Автоматическая установка Python
+
+Если на компьютере нет нормального Python 3.10+ или команда `python` указывает на сломанный Windows alias, BAT-файлы пробуют установить Python автоматически через `winget`.
+
+Порядок действий:
+
+```text
+1. Проверить наличие Python 3.10+
+2. Если Python не найден — проверить наличие winget
+3. Если winget доступен — установить Python 3.13
+4. Если Python 3.13 не установился — попробовать Python 3.12
+5. После установки снова найти Python
+6. Проверить pip и зависимости
+```
+
+Отдельный файл для установки/проверки Python:
+
+```text
+install_python.bat
+```
+
+Если `winget` недоступен, установите Python вручную с сайта:
+
+```text
+https://www.python.org/downloads/windows/
+```
+
+При установке обязательно включите:
+
+```text
+pip
+Add python.exe to PATH
+Python Launcher
+```
+
+---
+
 # English version
 
 ## Purpose
@@ -660,6 +727,8 @@ It is intended for small service companies, repair workshops, internal operators
 - Device selection through the Dreamkas API.
 - Excel-based receipt template.
 - Automatic Excel template opening before receipt creation.
+- Automatic Excel template restore or creation if the file is missing.
+- Excel template embedding into the EXE build.
 - Receipt preview in the terminal.
 - Fiscalization task submission to Dreamkas.
 - Operation status polling.
@@ -674,11 +743,12 @@ It is intended for small service companies, repair workshops, internal operators
 - Encrypted SMTP password storage in `settings.txt`.
 - Request, response, and error logging.
 - Dependency checking and installation on startup.
+- Automatic `pip` recovery via `ensurepip` or `get-pip.py`.
+- Python diagnostics through `diagnose_python.bat`.
 - Simple GUI launcher.
 - EXE build support via PyInstaller.
 
 ---
-
 
 ## Current version additions
 
@@ -687,8 +757,12 @@ It is intended for small service companies, repair workshops, internal operators
 - If the template is missing, the program restores it from the embedded EXE resource.
 - If the embedded resource is unavailable, the program creates a new Excel template programmatically.
 - The GUI launcher can also restore or create the Excel template.
-- `build_exe.bat` was updated to include the Excel template in the EXE using `--add-data`.
-- The tool is now easier to move: the EXE can be launched in a new folder without manually copying the Excel template.
+- `build_exe.bat` includes the Excel template in the EXE using `--add-data`.
+- `start_dreamkas.bat`, `start_gui.bat`, `install_dependencies.bat`, and `build_exe.bat` check whether `pip` is available.
+- If `pip` is missing, the BAT files try to restore it using `ensurepip`.
+- If `ensurepip` is unavailable or fails, the BAT files download the official `get-pip.py` bootstrap script and install `pip`.
+- `diagnose_python.bat` was added for Python, `pip`, `ensurepip`, and dependency import diagnostics.
+- The EXE can be launched in a new folder without manually copying the Excel template.
 
 ---
 
@@ -790,6 +864,39 @@ CLEAR_EXCEL_AFTER_SUCCESS = 0
 
 ---
 
+## Embedded Excel template for EXE
+
+When running from source, the program normally uses this file next to the script:
+
+```text
+dreamkas_receipt_template.xlsx
+```
+
+When building an EXE, the Excel template is also embedded into the executable as a PyInstaller resource.
+
+On startup, the program checks whether this file exists:
+
+```text
+dreamkas_receipt_template.xlsx
+```
+
+next to the program or EXE.
+
+If the file exists, it is used.
+
+If the file is missing, the program automatically:
+
+```text
+1. tries to restore dreamkas_receipt_template.xlsx from the embedded EXE resource;
+2. if the embedded resource is unavailable, creates a new Excel template programmatically.
+```
+
+As a result, the EXE can be moved to a new folder and launched even without manually copying the Excel template. The template will be created automatically on first startup.
+
+This works both for the console tool and for the GUI launcher.
+
+---
+
 ## Cashier name
 
 The cashier name is read from Excel and saved locally:
@@ -816,11 +923,14 @@ requirements.txt                 Python dependencies
 start_dreamkas.bat               console launcher
 start_gui.bat                    GUI launcher
 install_dependencies.bat         dependency installer
+install_python.bat               Python installer/checker
+diagnose_python.bat              Python and pip diagnostics
 test_smtp.py                     SMTP test script
 test_smtp.bat                    SMTP test launcher
 build_exe.bat                    PyInstaller EXE builder
 SMTP_SETUP.txt                   SMTP setup guide
 README.md                        project description
+CHANGELOG.md                     change log
 ```
 
 Runtime folders:
@@ -872,6 +982,30 @@ Or:
 ```bat
 python -m pip install -r requirements.txt
 ```
+
+---
+
+## Python / pip bootstrap
+
+If Python is installed without `pip`, the launcher first tries:
+
+```bat
+python -m ensurepip --upgrade
+```
+
+If `ensurepip` is unavailable or fails, the launcher downloads and runs the official `get-pip.py` bootstrap script from:
+
+```text
+https://bootstrap.pypa.io/get-pip.py
+```
+
+The package also includes:
+
+```text
+diagnose_python.bat
+```
+
+It prints the active Python path, Python versions, `ensurepip` status, `pip` status, and dependency import status.
 
 ---
 
@@ -1158,42 +1292,6 @@ The main fiscalization workflow remains in the console tool.
 
 ---
 
-
-## Embedded Excel template for EXE
-
-When running from source, the program normally uses this file next to the script:
-
-```text
-dreamkas_receipt_template.xlsx
-```
-
-When building an EXE, the Excel template is also embedded into the executable as a PyInstaller resource.
-
-This solves the issue where the user runs `DreamkasReceipt.exe` but the Excel template is not located next to the EXE.
-
-On startup, the program checks whether this file exists:
-
-```text
-dreamkas_receipt_template.xlsx
-```
-
-next to the program or EXE.
-
-If the file exists, it is used.
-
-If the file is missing, the program automatically:
-
-```text
-1. tries to restore dreamkas_receipt_template.xlsx from the embedded EXE resource;
-2. if the embedded resource is unavailable, creates a new Excel template programmatically.
-```
-
-As a result, the EXE can be moved to a new folder and launched even without manually copying the Excel template. The template will be created automatically on first startup.
-
-This works both for the console tool and for the GUI launcher.
-
----
-
 ## EXE build
 
 The project can be built with PyInstaller:
@@ -1230,8 +1328,6 @@ settings.txt
 The Excel template `dreamkas_receipt_template.xlsx` may also be placed next to the EXE manually, but it is not required. If the template is missing, the program will restore it from the embedded EXE resource or create a new template automatically.
 
 ---
-
-
 
 ## Security and GitHub
 
@@ -1286,3 +1382,40 @@ Internal use only
 
 Project owner: `@darkatrium`
 
+
+## Automatic Python installation
+
+If the computer does not have a valid Python 3.10+ installation or the `python` command points to a broken Windows alias, the BAT launchers try to install Python automatically using `winget`.
+
+Workflow:
+
+```text
+1. Check for Python 3.10+
+2. If Python is missing, check for winget
+3. If winget is available, install Python 3.13
+4. If Python 3.13 fails, try Python 3.12
+5. Detect Python again after installation
+6. Check pip and dependencies
+```
+
+Dedicated Python installer/checker:
+
+```text
+install_python.bat
+```
+
+If `winget` is unavailable, install Python manually from:
+
+```text
+https://www.python.org/downloads/windows/
+```
+
+During installation, enable:
+
+```text
+pip
+Add python.exe to PATH
+Python Launcher
+```
+
+---

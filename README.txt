@@ -164,3 +164,125 @@ dreamkas_receipt_template.xlsx
 2. если ресурс недоступен — создает новый шаблон программно.
 
 Теперь EXE можно запускать даже если рядом нет Excel-шаблона: файл будет создан автоматически.
+
+
+## Восстановление pip
+
+Если Python установлен без `pip`, BAT-файлы сначала пробуют:
+
+```bat
+python -m ensurepip --upgrade
+```
+
+Если `ensurepip` недоступен или завершился ошибкой, BAT автоматически скачивает и запускает официальный bootstrap-скрипт:
+
+```text
+https://bootstrap.pypa.io/get-pip.py
+```
+
+Также добавлен файл:
+
+```text
+diagnose_python.bat
+```
+
+Он показывает активный путь Python, доступные версии Python, состояние `ensurepip`, состояние `pip` и проверку импортов зависимостей.
+
+
+## Python / pip bootstrap
+
+If Python is installed without `pip`, the launcher first tries:
+
+```bat
+python -m ensurepip --upgrade
+```
+
+If `ensurepip` is unavailable or fails, the launcher downloads and runs the official `get-pip.py` bootstrap script from:
+
+```text
+https://bootstrap.pypa.io/get-pip.py
+```
+
+The package also includes:
+
+```text
+diagnose_python.bat
+```
+
+It prints the active Python path, Python versions, `ensurepip` status, `pip` status, and dependency import status.
+
+
+## Автоматическая установка Python
+
+Если на компьютере нет нормального Python 3.10+ или команда `python` указывает на сломанный Windows alias, BAT-файлы пробуют установить Python автоматически через `winget`.
+
+Порядок действий:
+
+```text
+1. Проверить наличие Python 3.10+
+2. Если Python не найден — проверить наличие winget
+3. Если winget доступен — установить Python 3.13
+4. Если Python 3.13 не установился — попробовать Python 3.12
+5. После установки снова найти Python
+6. Проверить pip и зависимости
+```
+
+Отдельный файл для установки/проверки Python:
+
+```text
+install_python.bat
+```
+
+Если `winget` недоступен, установите Python вручную с сайта:
+
+```text
+https://www.python.org/downloads/windows/
+```
+
+При установке обязательно включите:
+
+```text
+pip
+Add python.exe to PATH
+Python Launcher
+```
+
+---
+
+
+## Automatic Python installation
+
+If the computer does not have a valid Python 3.10+ installation or the `python` command points to a broken Windows alias, the BAT launchers try to install Python automatically using `winget`.
+
+Workflow:
+
+```text
+1. Check for Python 3.10+
+2. If Python is missing, check for winget
+3. If winget is available, install Python 3.13
+4. If Python 3.13 fails, try Python 3.12
+5. Detect Python again after installation
+6. Check pip and dependencies
+```
+
+Dedicated Python installer/checker:
+
+```text
+install_python.bat
+```
+
+If `winget` is unavailable, install Python manually from:
+
+```text
+https://www.python.org/downloads/windows/
+```
+
+During installation, enable:
+
+```text
+pip
+Add python.exe to PATH
+Python Launcher
+```
+
+---

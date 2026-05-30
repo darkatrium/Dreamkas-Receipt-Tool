@@ -66,7 +66,7 @@ except ImportError as exc:
 
 
 API_DEFAULT_BASE_URL = "https://kabinet.dreamkas.ru/api"
-APP_VERSION = "6.6"
+APP_VERSION = "6.9"
 DB_FILE = "dreamkas_receipts.sqlite3"
 
 DB_DIR = "db"

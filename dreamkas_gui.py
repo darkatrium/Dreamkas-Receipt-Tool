@@ -149,7 +149,7 @@ class App(tk.Tk):
     def _build_ui(self) -> None:
         pad = {"padx": 10, "pady": 6}
 
-        title = tk.Label(self, text="Dreamkas Receipt Tool v6.6", font=("Segoe UI", 16, "bold"))
+        title = tk.Label(self, text="Dreamkas Receipt Tool v6.9", font=("Segoe UI", 16, "bold"))
         title.pack(anchor="w", padx=14, pady=(14, 4))
 
         frame = tk.Frame(self)

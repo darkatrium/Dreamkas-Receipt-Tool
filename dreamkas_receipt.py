@@ -54,7 +54,7 @@ from typing import Any, Optional
 
 try:
     import requests
-    from openpyxl import load_workbook
+    from openpyxl import Workbook, load_workbook
     import qrcode
 except ImportError as exc:
     print("Не хватает Python-библиотек.")
@@ -66,7 +66,7 @@ except ImportError as exc:
 
 
 API_DEFAULT_BASE_URL = "https://kabinet.dreamkas.ru/api"
-APP_VERSION = "6.3"
+APP_VERSION = "6.6"
 DB_FILE = "dreamkas_receipts.sqlite3"
 
 DB_DIR = "db"
@@ -120,6 +120,152 @@ def wait_key(message: str = "Нажмите любую клавишу для в�
     except Exception:
         pass
 
+
+def get_app_dir() -> Path:
+    """
+    Возвращает папку приложения.
+
+    Для обычного .py это папка скрипта.
+    Для PyInstaller EXE это папка, где лежит .exe.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def get_resource_path(filename: str) -> Optional[Path]:
+    """
+    Ищет файл-ресурс внутри PyInstaller _MEIPASS или рядом со скриптом.
+
+    При сборке EXE Excel-шаблон добавляется через:
+        --add-data "dreamkas_receipt_template.xlsx;."
+    """
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidate = Path(meipass) / filename
+        if candidate.exists():
+            return candidate
+
+    candidate = get_app_dir() / filename
+    if candidate.exists():
+        return candidate
+
+    return None
+
+
+def resolve_app_file(path: Path) -> Path:
+    """
+    Делает относительный путь относительным к папке приложения, а не к случайной cwd.
+
+    Это важно для EXE: если программу открыть двойным кликом, рабочая папка
+    может отличаться от папки, где лежит .exe.
+    """
+    path = path.expanduser()
+    if path.is_absolute():
+        return path
+    return get_app_dir() / path
+
+
+def create_default_excel_template(excel_path: Path) -> None:
+    """
+    Создает новый Excel-шаблон программно, если шаблона нет рядом с программой
+    и его не удалось восстановить из встроенного ресурса EXE.
+    """
+    excel_path.parent.mkdir(parents=True, exist_ok=True)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Чек"
+
+    rows = [
+        ("Тип оплаты", "Безнал"),
+        ("Email покупателя", ""),
+        ("Телефон покупателя", ""),
+        ("Система налогообложения", "SIMPLE_WO"),
+        ("Имя кассира", ""),
+        ("Наименование", "Тип (Услуга = 1 | Товар = 0)", "Количество", "Цена", "Ставка НДС (0 - Без НДС)"),
+        ("", "", "", "", ""),
+    ]
+
+    for r_idx, row in enumerate(rows, start=1):
+        for c_idx, value in enumerate(row, start=1):
+            ws.cell(row=r_idx, column=c_idx).value = value
+
+    # Ширины колонок
+    widths = {
+        "A": 34,
+        "B": 28,
+        "C": 14,
+        "D": 14,
+        "E": 24,
+    }
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
+
+    # Простое форматирование
+    from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+
+    header_fill = PatternFill("solid", fgColor="D9EAF7")
+    meta_fill = PatternFill("solid", fgColor="F2F2F2")
+    thin = Side(style="thin", color="CCCCCC")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    for row in range(1, 6):
+        ws.cell(row=row, column=1).font = Font(bold=True)
+        ws.cell(row=row, column=1).fill = meta_fill
+        ws.cell(row=row, column=1).border = border
+        ws.cell(row=row, column=2).border = border
+
+    for col in range(1, 6):
+        cell = ws.cell(row=6, column=col)
+        cell.font = Font(bold=True)
+        cell.fill = header_fill
+        cell.border = border
+        cell.alignment = Alignment(wrap_text=True, vertical="center")
+
+    # Несколько пустых строк с рамками для удобства заполнения
+    for row in range(7, 57):
+        for col in range(1, 6):
+            ws.cell(row=row, column=col).border = border
+
+    ws.freeze_panes = "A7"
+    wb.save(excel_path)
+
+
+def ensure_excel_template_available(excel_path: Path) -> Path:
+    """
+    Проверяет наличие Excel-шаблона рядом с программой.
+
+    Если шаблона нет:
+    1. пробует восстановить его из встроенного ресурса PyInstaller;
+    2. если ресурса нет — создает новый шаблон программно.
+    """
+    excel_path = resolve_app_file(excel_path)
+
+    if excel_path.exists():
+        return excel_path
+
+    print("\nExcel-шаблон не найден рядом с программой.")
+    print(f"Ожидаемый путь: {excel_path}")
+
+    resource = get_resource_path("dreamkas_receipt_template.xlsx")
+    if resource and resource.exists() and resource.resolve() != excel_path.resolve():
+        try:
+            excel_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(resource, excel_path)
+            print("Excel-шаблон восстановлен из встроенного ресурса EXE.")
+            print(f"Создан файл: {excel_path}")
+            return excel_path
+        except Exception as exc:
+            print(f"Не удалось скопировать встроенный шаблон: {exc}")
+
+    create_default_excel_template(excel_path)
+    print("Создан новый Excel-шаблон по умолчанию.")
+    print(f"Создан файл: {excel_path}")
+    return excel_path
+
+
+
 def open_excel_for_user_fill(excel_path: Path) -> None:
     """
     Открывает Excel-шаблон перед формированием предчека.
@@ -128,15 +274,10 @@ def open_excel_for_user_fill(excel_path: Path) -> None:
     шаблон, сохраняет его, затем возвращается в терминал и нажимает клавишу.
     После этого скрипт читает файл и показывает предчек.
     """
-    excel_path = excel_path.expanduser()
-    if not excel_path.is_absolute():
-        excel_path = Path.cwd() / excel_path
+    excel_path = ensure_excel_template_available(excel_path)
 
     print("\nОткрываю Excel-шаблон для заполнения...")
     print(f"Файл: {excel_path}")
-
-    if not excel_path.exists():
-        raise FileNotFoundError(f"Excel-файл не найден: {excel_path}")
 
     try:
         if os.name == "nt":
@@ -731,8 +872,7 @@ def build_cashier_payload(cashier_name: str) -> dict[str, str]:
 
 
 def read_excel_receipt(excel_path: Path, settings: dict[str, str]) -> ReceiptDraft:
-    if not excel_path.exists():
-        raise FileNotFoundError(f"Excel-файл не найден: {excel_path}")
+    excel_path = ensure_excel_template_available(excel_path)
 
     wb = load_workbook(filename=excel_path, data_only=True)
     ws = wb.active
@@ -860,9 +1000,7 @@ def clear_excel_template_after_success(excel_path: Path) -> None:
     Оставляет шапку и подсказки, но очищает поля ввода и товарные позиции.
     Если Excel-файл открыт и Windows заблокировал сохранение, выводит предупреждение.
     """
-    if not excel_path.exists():
-        print(f"Внимание: Excel-шаблон не найден для очистки: {excel_path}")
-        return
+    excel_path = ensure_excel_template_available(excel_path)
 
     wb = load_workbook(filename=excel_path)
     ws = wb.active
@@ -2578,11 +2716,11 @@ def main() -> int:
     parser.add_argument("--excel", default="dreamkas_receipt_template.xlsx", help="Excel-файл с новым чеком")
     args = parser.parse_args()
 
-    workdir = Path.cwd()
+    workdir = get_app_dir()
     paths = ensure_work_folders(workdir)
     configure_logging(paths["logs"])
-    settings_path = Path(args.settings)
-    excel_path = Path(args.excel)
+    settings_path = resolve_app_file(Path(args.settings))
+    excel_path = ensure_excel_template_available(Path(args.excel))
     db_path = paths["db"] / DB_FILE
 
     try:

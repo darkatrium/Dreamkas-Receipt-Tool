@@ -6,6 +6,10 @@
 
 ---
 
+**Current version / Актуальная версия:** v6.6
+
+---
+
 ## Languages / Языки
 
 - [Русская версия](#русская-версия)
@@ -47,6 +51,19 @@
 - Проверка и автоматическая установка зависимостей при запуске.
 - Простая GUI-оболочка для запуска утилиты и открытия рабочих папок.
 - Сборка в EXE через PyInstaller.
+
+---
+
+
+## Что добавлено в актуальной версии
+
+- Excel-шаблон встраивается внутрь EXE при сборке через PyInstaller.
+- При запуске EXE программа проверяет наличие `dreamkas_receipt_template.xlsx` рядом с программой.
+- Если шаблона нет, программа восстанавливает его из встроенного ресурса EXE.
+- Если встроенный ресурс недоступен, программа создаёт новый Excel-шаблон программно.
+- GUI-оболочка также умеет восстанавливать или создавать Excel-шаблон.
+- `build_exe.bat` обновлён и добавляет Excel-шаблон в EXE через параметр `--add-data`.
+- Программа стала удобнее для переноса: EXE можно запускать в новой папке без ручного копирования Excel-шаблона.
 
 ---
 
@@ -514,12 +531,54 @@ GUI позволяет:
 
 ---
 
+
+## Встроенный Excel-шаблон для EXE
+
+При обычном запуске из исходников рядом с программой используется файл:
+
+```text
+dreamkas_receipt_template.xlsx
+```
+
+При сборке в EXE шаблон Excel дополнительно встраивается внутрь исполняемого файла как ресурс PyInstaller.
+
+Это решает проблему, когда пользователь запускает `DreamkasReceipt.exe`, а Excel-шаблон не лежит рядом с EXE.
+
+При запуске программа проверяет наличие файла:
+
+```text
+dreamkas_receipt_template.xlsx
+```
+
+рядом с программой или EXE.
+
+Если файл найден — используется он.
+
+Если файл не найден, программа автоматически:
+
+```text
+1. пробует восстановить dreamkas_receipt_template.xlsx из встроенного ресурса EXE;
+2. если встроенный ресурс недоступен — создаёт новый Excel-шаблон программно.
+```
+
+Таким образом, EXE можно перенести в новую папку и запустить даже без заранее скопированного Excel-шаблона. Шаблон будет создан автоматически при первом запуске.
+
+Это работает как для основной консольной программы, так и для GUI-оболочки.
+
+---
+
 ## Сборка в EXE
 
 Для сборки используется PyInstaller:
 
 ```bat
 build_exe.bat
+```
+
+Файл `build_exe.bat` собирает консольную и GUI-версии, а также встраивает Excel-шаблон внутрь EXE через PyInstaller:
+
+```bat
+--add-data "dreamkas_receipt_template.xlsx;."
 ```
 
 После сборки EXE-файлы будут в папке:
@@ -535,11 +594,44 @@ DreamkasReceipt.exe
 DreamkasReceiptGUI.exe
 ```
 
-Рядом с EXE должны находиться:
+Рядом с EXE желательно хранить:
 
 ```text
 settings.txt
-dreamkas_receipt_template.xlsx
+```
+
+Excel-шаблон `dreamkas_receipt_template.xlsx` можно положить рядом с EXE вручную, но это не обязательно. Если шаблона рядом нет, программа восстановит его из встроенного ресурса EXE или создаст новый шаблон автоматически.
+
+---
+
+
+## Безопасность и GitHub
+
+Не рекомендуется публиковать в GitHub:
+
+```text
+settings.txt
+db/
+logs/
+receipts_txt/
+receipts_qr/
+receipts_pdf/
+```
+
+Пример `.gitignore`:
+
+```gitignore
+settings.txt
+db/
+logs/
+receipts_txt/
+receipts_qr/
+receipts_pdf/
+__pycache__/
+*.pyc
+dist/
+build/
+*.spec
 ```
 
 ---
@@ -584,6 +676,19 @@ It is intended for small service companies, repair workshops, internal operators
 - Dependency checking and installation on startup.
 - Simple GUI launcher.
 - EXE build support via PyInstaller.
+
+---
+
+
+## Current version additions
+
+- The Excel template is embedded into the EXE during the PyInstaller build.
+- On startup, the EXE checks whether `dreamkas_receipt_template.xlsx` exists next to the program.
+- If the template is missing, the program restores it from the embedded EXE resource.
+- If the embedded resource is unavailable, the program creates a new Excel template programmatically.
+- The GUI launcher can also restore or create the Excel template.
+- `build_exe.bat` was updated to include the Excel template in the EXE using `--add-data`.
+- The tool is now easier to move: the EXE can be launched in a new folder without manually copying the Excel template.
 
 ---
 
@@ -1053,12 +1158,54 @@ The main fiscalization workflow remains in the console tool.
 
 ---
 
+
+## Embedded Excel template for EXE
+
+When running from source, the program normally uses this file next to the script:
+
+```text
+dreamkas_receipt_template.xlsx
+```
+
+When building an EXE, the Excel template is also embedded into the executable as a PyInstaller resource.
+
+This solves the issue where the user runs `DreamkasReceipt.exe` but the Excel template is not located next to the EXE.
+
+On startup, the program checks whether this file exists:
+
+```text
+dreamkas_receipt_template.xlsx
+```
+
+next to the program or EXE.
+
+If the file exists, it is used.
+
+If the file is missing, the program automatically:
+
+```text
+1. tries to restore dreamkas_receipt_template.xlsx from the embedded EXE resource;
+2. if the embedded resource is unavailable, creates a new Excel template programmatically.
+```
+
+As a result, the EXE can be moved to a new folder and launched even without manually copying the Excel template. The template will be created automatically on first startup.
+
+This works both for the console tool and for the GUI launcher.
+
+---
+
 ## EXE build
 
 The project can be built with PyInstaller:
 
 ```bat
 build_exe.bat
+```
+
+`build_exe.bat` builds both the console and GUI versions and embeds the Excel template into the EXE using PyInstaller:
+
+```bat
+--add-data "dreamkas_receipt_template.xlsx;."
 ```
 
 Output folder:
@@ -1074,15 +1221,48 @@ DreamkasReceipt.exe
 DreamkasReceiptGUI.exe
 ```
 
-Keep these files near the EXE:
+It is recommended to keep this file near the EXE:
 
 ```text
 settings.txt
-dreamkas_receipt_template.xlsx
 ```
+
+The Excel template `dreamkas_receipt_template.xlsx` may also be placed next to the EXE manually, but it is not required. If the template is missing, the program will restore it from the embedded EXE resource or create a new template automatically.
 
 ---
 
+
+
+## Security and GitHub
+
+Do not commit these files and folders to GitHub:
+
+```text
+settings.txt
+db/
+logs/
+receipts_txt/
+receipts_qr/
+receipts_pdf/
+```
+
+Example `.gitignore`:
+
+```gitignore
+settings.txt
+db/
+logs/
+receipts_txt/
+receipts_qr/
+receipts_pdf/
+__pycache__/
+*.pyc
+dist/
+build/
+*.spec
+```
+
+---
 
 ## Important notice
 

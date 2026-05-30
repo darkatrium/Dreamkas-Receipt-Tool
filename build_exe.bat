@@ -13,9 +13,9 @@ echo Installing build dependencies...
 %PYTHON_CMD% -m pip install -r requirements.txt
 if errorlevel 1 (echo ERROR: pip install failed.& pause& exit /b 1)
 echo Building console EXE...
-%PYTHON_CMD% -m PyInstaller --onefile --name DreamkasReceipt dreamkas_receipt.py
+%PYTHON_CMD% -m PyInstaller --onefile --name DreamkasReceipt --add-data "dreamkas_receipt_template.xlsx;." dreamkas_receipt.py
 echo Building GUI EXE...
-%PYTHON_CMD% -m PyInstaller --onefile --windowed --name DreamkasReceiptGUI dreamkas_gui.py
+%PYTHON_CMD% -m PyInstaller --onefile --windowed --name DreamkasReceiptGUI --add-data "dreamkas_receipt_template.xlsx;." dreamkas_gui.py
 echo.
 echo Done. EXE files are in the dist folder.
 pause

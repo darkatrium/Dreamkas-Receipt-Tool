@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import shutil
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -20,6 +21,86 @@ from tkinter import filedialog, messagebox
 APP_DIR = Path(__file__).resolve().parent
 SCRIPT = APP_DIR / "dreamkas_receipt.py"
 DEFAULT_EXCEL = APP_DIR / "dreamkas_receipt_template.xlsx"
+
+
+def create_default_excel_template(excel_path: Path) -> None:
+    """Create a basic Excel template if it is missing."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+    except Exception as exc:
+        messagebox.showerror("Dreamkas", f"openpyxl is required to create Excel template:\n{exc}")
+        return
+
+    excel_path.parent.mkdir(parents=True, exist_ok=True)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Чек"
+
+    rows = [
+        ("Тип оплаты", "Безнал"),
+        ("Email покупателя", ""),
+        ("Телефон покупателя", ""),
+        ("Система налогообложения", "SIMPLE_WO"),
+        ("Имя кассира", ""),
+        ("Наименование", "Тип (Услуга = 1 | Товар = 0)", "Количество", "Цена", "Ставка НДС (0 - Без НДС)"),
+        ("", "", "", "", ""),
+    ]
+
+    for r_idx, row in enumerate(rows, start=1):
+        for c_idx, value in enumerate(row, start=1):
+            ws.cell(row=r_idx, column=c_idx).value = value
+
+    for col, width in {"A": 34, "B": 28, "C": 14, "D": 14, "E": 24}.items():
+        ws.column_dimensions[col].width = width
+
+    header_fill = PatternFill("solid", fgColor="D9EAF7")
+    meta_fill = PatternFill("solid", fgColor="F2F2F2")
+    thin = Side(style="thin", color="CCCCCC")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    for row in range(1, 6):
+        ws.cell(row=row, column=1).font = Font(bold=True)
+        ws.cell(row=row, column=1).fill = meta_fill
+        ws.cell(row=row, column=1).border = border
+        ws.cell(row=row, column=2).border = border
+
+    for col in range(1, 6):
+        cell = ws.cell(row=6, column=col)
+        cell.font = Font(bold=True)
+        cell.fill = header_fill
+        cell.border = border
+        cell.alignment = Alignment(wrap_text=True, vertical="center")
+
+    for row in range(7, 57):
+        for col in range(1, 6):
+            ws.cell(row=row, column=col).border = border
+
+    ws.freeze_panes = "A7"
+    wb.save(excel_path)
+
+
+def ensure_default_excel_template() -> Path:
+    """Ensure default Excel template exists next to the GUI/script/EXE."""
+    if DEFAULT_EXCEL.exists():
+        return DEFAULT_EXCEL
+
+    # If running under PyInstaller, try bundled resource first.
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        bundled = Path(meipass) / "dreamkas_receipt_template.xlsx"
+        if bundled.exists():
+            try:
+                shutil.copy2(bundled, DEFAULT_EXCEL)
+                return DEFAULT_EXCEL
+            except Exception:
+                pass
+
+    create_default_excel_template(DEFAULT_EXCEL)
+    return DEFAULT_EXCEL
+
+
 
 
 def find_python() -> str:
@@ -60,7 +141,7 @@ class App(tk.Tk):
         self.geometry("720x360")
         self.resizable(False, False)
 
-        self.excel_var = tk.StringVar(value=str(DEFAULT_EXCEL))
+        self.excel_var = tk.StringVar(value=str(ensure_default_excel_template()))
         self.status_var = tk.StringVar(value="Ready")
 
         self._build_ui()
@@ -68,7 +149,7 @@ class App(tk.Tk):
     def _build_ui(self) -> None:
         pad = {"padx": 10, "pady": 6}
 
-        title = tk.Label(self, text="Dreamkas Receipt Tool v6.1", font=("Segoe UI", 16, "bold"))
+        title = tk.Label(self, text="Dreamkas Receipt Tool v6.6", font=("Segoe UI", 16, "bold"))
         title.pack(anchor="w", padx=14, pady=(14, 4))
 
         frame = tk.Frame(self)
@@ -108,7 +189,11 @@ class App(tk.Tk):
             self.excel_var.set(path)
 
     def open_excel(self) -> None:
-        open_path(Path(self.excel_var.get()))
+        path = Path(self.excel_var.get())
+        if path.name == "dreamkas_receipt_template.xlsx" and not path.exists():
+            path = ensure_default_excel_template()
+            self.excel_var.set(str(path))
+        open_path(path)
 
     def start_console(self) -> None:
         if not SCRIPT.exists():

@@ -9,10 +9,8 @@
 ## Касса Dreamkas-Ф
 
 Утилита разрабатывалась под работу с кассой **Dreamkas-Ф** и Dreamkas API.
-так же может работать и с другими типами касс компании Dreamkas
 
 Страница кассы:
-[**Dreamkas-Ф**](https://dreamkas.ru/kassy-dreamkas/dreamkas-f/ple.com).
 
 ```text
 https://dreamkas.ru/kassy-dreamkas/dreamkas-f/

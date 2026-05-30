@@ -14,6 +14,9 @@
 Страница кассы:
 [**Dreamkas-Ф**](https://dreamkas.ru/kassy-dreamkas/dreamkas-f/ple.com).
 
+```text
+https://dreamkas.ru/kassy-dreamkas/dreamkas-f/
+```
 
 
 

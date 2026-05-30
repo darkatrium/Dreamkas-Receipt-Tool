@@ -10,3 +10,7 @@ dist/
 build/
 *.spec
 .env
+
+python_path.txt
+
+_python/

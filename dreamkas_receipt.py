@@ -66,7 +66,7 @@ except ImportError as exc:
 
 
 API_DEFAULT_BASE_URL = "https://kabinet.dreamkas.ru/api"
-APP_VERSION = "6.9"
+APP_VERSION = "6.30"
 DB_FILE = "dreamkas_receipts.sqlite3"
 
 DB_DIR = "db"
@@ -93,6 +93,9 @@ class ReceiptDraft:
     payment_type: str
     buyer_email: Optional[str]
     buyer_phone: Optional[str]
+    buyer_type: str
+    buyer_legal_name: Optional[str]
+    buyer_inn: Optional[str]
     tax_mode: str
     cashier_name: str
     positions: list[ReceiptPosition]
@@ -103,8 +106,44 @@ class ReceiptDraft:
     refund_mode: Optional[str] = None
     refunded_positions: Optional[list[int]] = None
 
+@dataclass
+class ReceiptInputMeta:
+    """Реквизиты чека, которые вводятся в терминале."""
+    payment_type: str
+    buyer_email: Optional[str]
+    buyer_phone: Optional[str]
+    buyer_type: str
+    buyer_legal_name: Optional[str]
+    buyer_inn: Optional[str]
+    tax_mode: str
+    cashier_name: str
+
+
+@dataclass
+class SbpPaymentResult:
+    """Результат платежной сессии СБП T-Банка."""
+    payment_id: str
+    order_id: str
+    status: str
+    qr_payload: Optional[str]
+    qr_path: Optional[str]
+    init_response: dict[str, Any]
+    qr_response: dict[str, Any]
+    state_response: dict[str, Any]
+
+
 
 class DreamkasError(Exception):
+    pass
+
+
+class OperatorCancelled(DreamkasError):
+    """
+    Оператор нажал ESC во время ожидания платежа или фискализации.
+
+    Это локальная отмена ожидания. Если задание уже отправлено в Dreamkas,
+    оно может продолжить выполняться на стороне кассы.
+    """
     pass
 
 
@@ -119,6 +158,45 @@ def wait_key(message: str = "Нажмите любую клавишу для в�
             input()
     except Exception:
         pass
+
+
+def operator_cancel_requested() -> bool:
+    """
+    Проверяет, нажал ли оператор ESC.
+
+    На Windows используется msvcrt без блокировки.
+    На других ОС возвращает False, чтобы не ломать выполнение.
+    """
+    try:
+        import msvcrt  # type: ignore
+        if not msvcrt.kbhit():
+            return False
+        key = msvcrt.getch()
+        return key == b"\x1b"
+    except Exception:
+        return False
+
+
+def raise_if_operator_cancelled(stage: str) -> None:
+    if operator_cancel_requested():
+        raise OperatorCancelled(f"Оператор отменил ожидание: {stage}")
+
+
+def interruptible_sleep(seconds: int, stage: str) -> None:
+    """
+    Сон с проверкой ESC, чтобы оператор мог вернуться в главное меню
+    во время ожидания платежа или ответа Dreamkas.
+    """
+    seconds = max(1, int(seconds))
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        raise_if_operator_cancelled(stage)
+        time.sleep(min(0.2, max(0.0, deadline - time.time())))
+    raise_if_operator_cancelled(stage)
+
+
+def print_cancel_hint() -> None:
+    print("Нажмите ESC для отмены ожидания и возврата в главное меню.")
 
 
 def get_app_dir() -> Path:
@@ -168,69 +246,91 @@ def resolve_app_file(path: Path) -> Path:
 
 def create_default_excel_template(excel_path: Path) -> None:
     """
-    Создает новый Excel-шаблон программно, если шаблона нет рядом с программой
-    и его не удалось восстановить из встроенного ресурса EXE.
+    Создает Excel-шаблон только для товарных позиций.
+
+    Все реквизиты чека вводятся в терминале:
+    - тип оплаты;
+    - email/телефон покупателя;
+    - тип покупателя;
+    - ИНН/название юрлица;
+    - СНО;
+    - кассир.
+
+    В шаблоне есть выпадающие списки:
+    - колонка B: 1 = услуга, 0 = товар;
+    - колонка E: ставка НДС.
     """
     excel_path.parent.mkdir(parents=True, exist_ok=True)
 
     wb = Workbook()
     ws = wb.active
-    ws.title = "Чек"
+    ws.title = "Позиции"
 
-    rows = [
-        ("Тип оплаты", "Безнал"),
-        ("Email покупателя", ""),
-        ("Телефон покупателя", ""),
-        ("Система налогообложения", "SIMPLE_WO"),
-        ("Имя кассира", ""),
-        ("Наименование", "Тип (Услуга = 1 | Товар = 0)", "Количество", "Цена", "Ставка НДС (0 - Без НДС)"),
-        ("", "", "", "", ""),
+    headers = [
+        "Наименование",
+        "Тип (Услуга = 1 | Товар = 0)",
+        "Количество",
+        "Цена",
+        "Ставка НДС (0 - Без НДС)",
     ]
 
-    for r_idx, row in enumerate(rows, start=1):
-        for c_idx, value in enumerate(row, start=1):
-            ws.cell(row=r_idx, column=c_idx).value = value
+    for col, value in enumerate(headers, start=1):
+        ws.cell(row=1, column=col).value = value
 
-    # Ширины колонок
-    widths = {
-        "A": 34,
-        "B": 28,
-        "C": 14,
-        "D": 14,
-        "E": 24,
-    }
+    for row in range(2, 80):
+        for col in range(1, 6):
+            ws.cell(row=row, column=col).value = None
+
+    widths = {"A": 42, "B": 28, "C": 14, "D": 14, "E": 24}
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
 
-    # Простое форматирование
     from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+    from openpyxl.worksheet.datavalidation import DataValidation
 
     header_fill = PatternFill("solid", fgColor="D9EAF7")
-    meta_fill = PatternFill("solid", fgColor="F2F2F2")
     thin = Side(style="thin", color="CCCCCC")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    for row in range(1, 6):
-        ws.cell(row=row, column=1).font = Font(bold=True)
-        ws.cell(row=row, column=1).fill = meta_fill
-        ws.cell(row=row, column=1).border = border
-        ws.cell(row=row, column=2).border = border
-
     for col in range(1, 6):
-        cell = ws.cell(row=6, column=col)
+        cell = ws.cell(row=1, column=col)
         cell.font = Font(bold=True)
         cell.fill = header_fill
         cell.border = border
         cell.alignment = Alignment(wrap_text=True, vertical="center")
 
-    # Несколько пустых строк с рамками для удобства заполнения
-    for row in range(7, 57):
+    for row in range(2, 80):
         for col in range(1, 6):
             ws.cell(row=row, column=col).border = border
 
-    ws.freeze_panes = "A7"
-    wb.save(excel_path)
+    item_type_validation = DataValidation(
+        type="list",
+        formula1='"1,0"',
+        allow_blank=False,
+        showErrorMessage=True,
+        errorTitle="Неверный тип позиции",
+        error="Выберите 1 для услуги или 0 для товара.",
+    )
+    item_type_validation.promptTitle = "Тип позиции"
+    item_type_validation.prompt = "1 = услуга, 0 = товар"
+    ws.add_data_validation(item_type_validation)
+    item_type_validation.add("B2:B79")
 
+    vat_validation = DataValidation(
+        type="list",
+        formula1='"0,5,7,10,22,5/105,7/107,10/110,22/122"',
+        allow_blank=True,
+        showErrorMessage=True,
+        errorTitle="Неверная ставка НДС",
+        error="Выберите ставку НДС из списка.",
+    )
+    vat_validation.promptTitle = "Ставка НДС"
+    vat_validation.prompt = "0 = без НДС; также доступны 5, 7, 10, 22 и расчетные ставки."
+    ws.add_data_validation(vat_validation)
+    vat_validation.add("E2:E79")
+
+    ws.freeze_panes = "A2"
+    wb.save(excel_path)
 
 def ensure_excel_template_available(excel_path: Path) -> Path:
     """
@@ -307,6 +407,10 @@ SETTINGS_ORDER = [
     "SHOP_NAME",
     "DEVICE_ID",
     "DEVICE_NAME",
+    "DEFAULT_CASHIER_NAME",
+    "DEFAULT_PAYMENT_TYPE",
+    "CASHLESS_PAYMENT_PROVIDER",
+    "DEFAULT_TAX_MODE",
     "API_BASE_URL",
     "OPERATION_TYPE",
     "TIMEOUT_MINUTES",
@@ -325,6 +429,28 @@ SETTINGS_ORDER = [
     "SMTP_SSL",
     "SMTP_STARTTLS",
     "SMTP_VERIFY_CERT",
+    "SEND_LEGAL_ENTITY_TAGS_TO_DREAMKAS",
+    "LEGAL_ENTITY_LOOKUP_ENABLED",
+    "LEGAL_ENTITY_LOOKUP_PROVIDER",
+    "DADATA_TOKEN",
+    "DADATA_BRANCH_TYPE",
+    "DADATA_UPDATE_EXCEL_NAME",
+    "TBANK_SBP_ENABLED",
+    "TBANK_TERMINAL_KEY",
+    "TBANK_PASSWORD_ENC",
+    "TBANK_PAY_TYPE",
+    "TBANK_PAYMENT_TIMEOUT_MINUTES",
+    "TBANK_POLL_INTERVAL_SECONDS",
+    "TBANK_REQUEST_TIMEOUT_SECONDS",
+    "TBANK_QR_DATA_TYPE",
+    "TBANK_DESCRIPTION_PREFIX",
+    "TBANK_B2B_SBP_ENABLED",
+    "TBANK_B2B_API_TOKEN_ENC",
+    "TBANK_B2B_ACCOUNT_NUMBER",
+    "TBANK_B2B_TTL_DAYS",
+    "TBANK_B2B_VAT",
+    "TBANK_B2B_REDIRECT_URL",
+    "TBANK_B2B_PURPOSE_PREFIX",
 ]
 
 DEFAULT_SETTINGS = {
@@ -333,6 +459,10 @@ DEFAULT_SETTINGS = {
     "SHOP_NAME": "",
     "DEVICE_ID": "",
     "DEVICE_NAME": "",
+    "DEFAULT_CASHIER_NAME": "",
+    "DEFAULT_PAYMENT_TYPE": "CASHLESS",
+    "CASHLESS_PAYMENT_PROVIDER": "EXTERNAL_TERMINAL",
+    "DEFAULT_TAX_MODE": "SIMPLE_WO",
     "API_BASE_URL": API_DEFAULT_BASE_URL,
     "OPERATION_TYPE": "SALE",
     "TIMEOUT_MINUTES": "5",
@@ -351,7 +481,69 @@ DEFAULT_SETTINGS = {
     "SMTP_SSL": "0",
     "SMTP_STARTTLS": "1",
     "SMTP_VERIFY_CERT": "1",
+    "SEND_LEGAL_ENTITY_TAGS_TO_DREAMKAS": "1",
+    "LEGAL_ENTITY_LOOKUP_ENABLED": "1",
+    "LEGAL_ENTITY_LOOKUP_PROVIDER": "DADATA",
+    "DADATA_TOKEN": "",
+    "DADATA_BRANCH_TYPE": "MAIN",
+    "DADATA_UPDATE_EXCEL_NAME": "1",
+    "TBANK_SBP_ENABLED": "0",
+    "TBANK_TERMINAL_KEY": "",
+    "TBANK_PASSWORD_ENC": "",
+    "TBANK_PAY_TYPE": "O",
+    "TBANK_PAYMENT_TIMEOUT_MINUTES": "10",
+    "TBANK_POLL_INTERVAL_SECONDS": "5",
+    "TBANK_REQUEST_TIMEOUT_SECONDS": "30",
+    "TBANK_QR_DATA_TYPE": "PAYLOAD",
+    "TBANK_DESCRIPTION_PREFIX": "Оплата заказа",
+    "TBANK_B2B_SBP_ENABLED": "0",
+    "TBANK_B2B_API_TOKEN_ENC": "",
+    "TBANK_B2B_ACCOUNT_NUMBER": "",
+    "TBANK_B2B_TTL_DAYS": "1",
+    "TBANK_B2B_VAT": "0",
+    "TBANK_B2B_REDIRECT_URL": "",
+    "TBANK_B2B_PURPOSE_PREFIX": "Оплата по счету",
 }
+
+TAX_MODE_CHOICES: list[tuple[str, str, str]] = [
+    ("DEFAULT", "По умолчанию на кассе", "использовать систему налогообложения, настроенную в Dreamkas/на кассе"),
+    ("OSN", "Общая система налогообложения", "ОСН"),
+    ("SIMPLE", "Упрощённая система — доходы", "УСН доходы"),
+    ("SIMPLE_WO", "Упрощённая система — доходы минус расходы", "УСН доходы-расходы"),
+    ("AGRICULT", "Единый сельскохозяйственный налог", "ЕСХН"),
+    ("PATENT", "Патентная система налогообложения", "ПСН / патент"),
+    ("ENVD", "Единый налог на вменённый доход", "ЕНВД, архивный режим"),
+]
+
+
+def tax_mode_label(value: str) -> str:
+    value = str(value or "").strip().upper()
+    for code, title, short in TAX_MODE_CHOICES:
+        if value == code:
+            return f"{title} ({code})"
+    return value or "-"
+
+
+def print_inline_status(message: str) -> None:
+    """
+    Перезаписывает текущую строку статуса без переноса строки.
+    Используется при ожидании оплаты СБП, чтобы QR-код не сдвигался вниз.
+    """
+    try:
+        width = shutil.get_terminal_size((120, 20)).columns
+    except Exception:
+        width = 120
+    clean = str(message).replace("\n", " ")
+    limit = max(width - 1, 20)
+    if len(clean) > limit:
+        clean = clean[: max(limit - 3, 20)] + "..."
+    print("\r" + clean.ljust(limit), end="", flush=True)
+
+
+def finish_inline_status() -> None:
+    """Завершает строку inline-статуса нормальным переносом."""
+    print("", flush=True)
+
 
 
 def bool_setting(settings: dict[str, str], key: str, default: bool = False) -> bool:
@@ -693,7 +885,7 @@ def decimal_to_json_number(value: Decimal) -> int | float:
 
 
 def parse_payment_type(raw: str) -> str:
-    text = raw.strip().lower().replace("ё", "е")
+    text = raw.strip().lower().replace("ё", "е").replace(" ", "")
     mapping = {
         "cash": "CASH",
         "нал": "CASH",
@@ -705,36 +897,149 @@ def parse_payment_type(raw: str) -> str:
         "безналичными": "CASHLESS",
         "карта": "CASHLESS",
         "картой": "CASHLESS",
+        "sbp": "SBP",
+        "сбп": "SBP",
+        "qr": "SBP",
+        "куар": "SBP",
+        "tbank": "SBP",
+        "тбанк": "SBP",
+        "т-банк": "SBP",
     }
-    if raw.strip().upper() in {"CASH", "CASHLESS", "PREPAID", "CREDIT", "CONSIDERATION"}:
+    if raw.strip().upper() in {"CASH", "CASHLESS", "SBP", "PREPAID", "CREDIT", "CONSIDERATION"}:
         return raw.strip().upper()
     if text in mapping:
         return mapping[text]
-    raise ValueError("Тип оплаты должен быть 'Наличные' или 'Безнал' / CASH или CASHLESS")
+    raise ValueError("Тип оплаты должен быть 'Наличные', 'Безнал' или 'СБП'")
 
+
+def normalize_cashless_payment_provider(raw: str) -> str:
+    """
+    Нормализует способ приема безналичной оплаты.
+
+    EXTERNAL_TERMINAL — внешний банковский терминал / эквайринг.
+    TBANK_SBP — интеграция СБП через T-Банк.
+    """
+    text = str(raw or "").strip().upper().replace(" ", "_").replace("-", "_")
+    mapping = {
+        "1": "EXTERNAL_TERMINAL",
+        "EXTERNAL": "EXTERNAL_TERMINAL",
+        "EXTERNAL_TERMINAL": "EXTERNAL_TERMINAL",
+        "TERMINAL": "EXTERNAL_TERMINAL",
+        "CARD_TERMINAL": "EXTERNAL_TERMINAL",
+        "ACQUIRING": "EXTERNAL_TERMINAL",
+        "ВНЕШНИЙ": "EXTERNAL_TERMINAL",
+        "ВНЕШНИЙ_ТЕРМИНАЛ": "EXTERNAL_TERMINAL",
+        "ТЕРМИНАЛ": "EXTERNAL_TERMINAL",
+        "ЭКВАЙРИНГ": "EXTERNAL_TERMINAL",
+        "2": "TBANK_SBP",
+        "TBANK": "TBANK_SBP",
+        "TBANK_SBP": "TBANK_SBP",
+        "T_BANK": "TBANK_SBP",
+        "TINKOFF": "TBANK_SBP",
+        "SBP": "TBANK_SBP",
+        "СБП": "TBANK_SBP",
+        "ТБАНК": "TBANK_SBP",
+        "Т_БАНК": "TBANK_SBP",
+        "Т_БАНК_СБП": "TBANK_SBP",
+    }
+    return mapping.get(text, "EXTERNAL_TERMINAL")
+
+
+def cashless_provider_label(provider: str) -> str:
+    provider = normalize_cashless_payment_provider(provider)
+    if provider == "TBANK_SBP":
+        return "T-Банк СБП"
+    return "внешний терминал"
+
+
+def payment_label(payment_type: str, settings: Optional[dict[str, str]] = None) -> str:
+    payment_type = str(payment_type or "").upper()
+    if payment_type == "CASH":
+        return "Наличные"
+    if payment_type == "SBP":
+        return "Безнал — T-Банк СБП"
+    if payment_type == "CASHLESS":
+        if settings:
+            return f"Безнал — {cashless_provider_label(settings.get('CASHLESS_PAYMENT_PROVIDER', 'EXTERNAL_TERMINAL'))}"
+        return "Безнал"
+    return payment_type
 
 def parse_tax_mode(raw: str) -> str:
-    text = raw.strip().upper().replace(" ", "")
-    aliases = {
-        "ОСН": "DEFAULT",
-        "ОБЩАЯ": "DEFAULT",
-        "DEFAULT": "DEFAULT",
-        "УСН": "SIMPLE",
-        "УСНДОХОД": "SIMPLE",
-        "УСНДОХОДЫ": "SIMPLE",
-        "SIMPLE": "SIMPLE",
-        "УСНДОХОДМИНУСРАСХОД": "SIMPLE_WO",
-        "УСНДОХОДЫМИНУСРАСХОДЫ": "SIMPLE_WO",
-        "SIMPLE_WO": "SIMPLE_WO",
-        "ЕСХН": "AGRICULT",
-        "AGRICULT": "AGRICULT",
-        "ПАТЕНТ": "PATENT",
-        "ПСН": "PATENT",
-        "PATENT": "PATENT",
+    """
+    Нормализует систему налогообложения.
+
+    Поддерживает:
+    - цифровой выбор из меню;
+    - русские названия;
+    - внутренние коды Dreamkas/старых шаблонов.
+    """
+    original = str(raw or "").strip()
+    text_norm = original.lower().replace("ё", "е").replace(" ", "").replace("-", "").replace("_", "")
+
+    number_mapping = {
+        "0": "DEFAULT",
+        "1": "OSN",
+        "2": "SIMPLE",
+        "3": "SIMPLE_WO",
+        "4": "AGRICULT",
+        "5": "PATENT",
+        "6": "ENVD",
     }
-    if text in aliases:
-        return aliases[text]
-    raise ValueError("Система налогообложения должна быть DEFAULT, SIMPLE, SIMPLE_WO, AGRICULT или PATENT")
+    if text_norm in number_mapping:
+        return number_mapping[text_norm]
+
+    direct = original.upper().strip()
+    if direct in {"DEFAULT", "OSN", "SIMPLE", "SIMPLE_WO", "AGRICULT", "PATENT", "ENVD"}:
+        return direct
+
+    mapping = {
+        "поумолчанию": "DEFAULT",
+        "default": "DEFAULT",
+        "касса": "DEFAULT",
+        "какнакассе": "DEFAULT",
+
+        "осн": "OSN",
+        "общая": "OSN",
+        "общаясистема": "OSN",
+        "общаясистеманалогообложения": "OSN",
+        "osn": "OSN",
+
+        "усн": "SIMPLE",
+        "упрощенная": "SIMPLE",
+        "упрощенка": "SIMPLE",
+        "доходы": "SIMPLE",
+        "усндоходы": "SIMPLE",
+        "simple": "SIMPLE",
+
+        "усндоходыминусрасходы": "SIMPLE_WO",
+        "доходыминусрасходы": "SIMPLE_WO",
+        "упрощеннаядоходыминусрасходы": "SIMPLE_WO",
+        "упрощенкадоходыминусрасходы": "SIMPLE_WO",
+        "simplewo": "SIMPLE_WO",
+        "simplewithout": "SIMPLE_WO",
+
+        "есхн": "AGRICULT",
+        "сельхоз": "AGRICULT",
+        "сельскохозяйственный": "AGRICULT",
+        "единыйсельскохозяйственныйналог": "AGRICULT",
+        "agricult": "AGRICULT",
+
+        "патент": "PATENT",
+        "псн": "PATENT",
+        "патентная": "PATENT",
+        "патентнаясистема": "PATENT",
+        "patent": "PATENT",
+
+        "енвд": "ENVD",
+        "вмененка": "ENVD",
+        "вмененный": "ENVD",
+        "envd": "ENVD",
+    }
+
+    if text_norm in mapping:
+        return mapping[text_norm]
+
+    raise ValueError("Неизвестная система налогообложения. Выберите вариант из списка цифрой.")
 
 
 def parse_item_type(raw: Any, row: int) -> str:
@@ -853,6 +1158,434 @@ def read_buyer_contacts_new_template(ws: Any) -> tuple[Optional[str], Optional[s
     return buyer_email, buyer_phone
 
 
+
+def normalize_buyer_inn(raw: Any) -> Optional[str]:
+    """Возвращает ИНН покупателя только цифрами или None."""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    digits = re.sub(r"\D", "", text)
+    return digits or None
+
+
+def normalize_buyer_type(raw: Any, legal_name: Optional[str] = None, buyer_inn: Optional[str] = None) -> str:
+    """
+    Определяет тип покупателя.
+
+    Поддерживаемые значения в Excel:
+    - Физлицо / ФЛ / физ / individual / person
+    - Юрлицо / ЮЛ / организация / компания / ИП / legal / company / b2b
+
+    Если тип не указан, но заполнены название или ИНН юрлица — считаем покупателя юрлицом.
+    """
+    text = str(raw or "").strip().lower().replace("ё", "е")
+    if legal_name or buyer_inn:
+        return "LEGAL_ENTITY"
+    if not text:
+        return "INDIVIDUAL"
+    legal_markers = ["юр", "юл", "орган", "компан", "ооо", "ип", "legal", "company", "b2b"]
+    individual_markers = ["физ", "фл", "част", "individual", "person"]
+    if any(marker in text for marker in legal_markers):
+        return "LEGAL_ENTITY"
+    if any(marker in text for marker in individual_markers):
+        return "INDIVIDUAL"
+    # Неизвестное значение оставляем как физлицо, но валидация даст предупреждение.
+    return "INDIVIDUAL"
+
+
+def dadata_headers(token: str) -> dict[str, str]:
+    return {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Token {token}",
+    }
+
+
+def extract_dadata_party_name(suggestion: dict[str, Any]) -> Optional[str]:
+    """
+    Достаёт человекочитаемое название организации/ИП из ответа DaData.
+    """
+    data = suggestion.get("data") if isinstance(suggestion, dict) else None
+    if not isinstance(data, dict):
+        return str(suggestion.get("value") or "").strip() or None
+
+    name = data.get("name")
+    if isinstance(name, dict):
+        for key in ("short_with_opf", "full_with_opf", "short", "full"):
+            value = str(name.get(key) or "").strip()
+            if value:
+                return value
+
+    # Для ИП/неполных ответов иногда удобнее брать value.
+    value = str(suggestion.get("value") or "").strip()
+    if value:
+        return value
+
+    return None
+
+
+def lookup_legal_entity_name_by_dadata(buyer_inn: str, settings: dict[str, str]) -> Optional[str]:
+    """
+    Ищет название юрлица/ИП по ИНН через DaData Find Party API.
+
+    Требуется DADATA_TOKEN в settings.txt.
+    """
+    token = str(settings.get("DADATA_TOKEN", "")).strip()
+    if not token:
+        print("Внимание: DADATA_TOKEN не задан, название юрлица по ИНН не загружено.")
+        return None
+
+    url = "https://suggestions.dadata.ru/suggestions/api/4_1/rs/findById/party"
+
+    payload: dict[str, Any] = {
+        "query": buyer_inn,
+        "count": 1,
+    }
+
+    # Для 10-значного ИНН обычно ищем головную организацию.
+    # Для 12-значного ИНН это ИП, branch_type не нужен.
+    branch_type = str(settings.get("DADATA_BRANCH_TYPE", "MAIN")).strip().upper()
+    if len(buyer_inn) == 10 and branch_type in {"MAIN", "BRANCH"}:
+        payload["branch_type"] = branch_type
+
+    if len(buyer_inn) == 12:
+        payload["type"] = "INDIVIDUAL"
+    elif len(buyer_inn) == 10:
+        payload["type"] = "LEGAL"
+
+    try:
+        logging.info("REQUEST POST %s\n%s", url, json.dumps(payload, ensure_ascii=False, indent=2))
+        response = requests.post(url, headers=dadata_headers(token), json=payload, timeout=15)
+        logging.info("RESPONSE %s POST %s\n%s", response.status_code, url, response.text[:5000])
+    except Exception as exc:
+        print(f"Внимание: не удалось обратиться к DaData для поиска по ИНН: {exc}")
+        logging.exception("DaData lookup failed")
+        return None
+
+    if response.status_code in {401, 403}:
+        print("Внимание: DaData отклонила DADATA_TOKEN. Проверьте токен в settings.txt.")
+        return None
+
+    if response.status_code >= 400:
+        print(f"Внимание: DaData вернула HTTP {response.status_code}. Название юрлица не загружено.")
+        return None
+
+    try:
+        body = response.json()
+    except Exception:
+        print("Внимание: DaData вернула не JSON. Название юрлица не загружено.")
+        return None
+
+    suggestions = body.get("suggestions")
+    if not isinstance(suggestions, list) or not suggestions:
+        print(f"Внимание: DaData не нашла организацию/ИП по ИНН {buyer_inn}.")
+        return None
+
+    name = extract_dadata_party_name(suggestions[0])
+    if name:
+        print(f"Название покупателя найдено по ИНН: {name}")
+    return name
+
+
+def lookup_legal_entity_name_by_inn(buyer_inn: Optional[str], settings: dict[str, str]) -> Optional[str]:
+    """
+    Универсальная точка поиска названия юрлица/ИП по ИНН.
+
+    Сейчас реализован провайдер DADATA.
+    Контур.Фокус можно добавить отдельным провайдером при наличии API-ключа и выбранного тарифа.
+    """
+    if not buyer_inn:
+        return None
+
+    if not bool_setting(settings, "LEGAL_ENTITY_LOOKUP_ENABLED", True):
+        return None
+
+    provider = str(settings.get("LEGAL_ENTITY_LOOKUP_PROVIDER", "DADATA")).strip().upper()
+    if provider in {"", "NONE", "OFF", "0", "DISABLED"}:
+        return None
+
+    if provider == "DADATA":
+        return lookup_legal_entity_name_by_dadata(buyer_inn, settings)
+
+    print(f"Внимание: неизвестный LEGAL_ENTITY_LOOKUP_PROVIDER = {provider}. Поиск по ИНН пропущен.")
+    return None
+
+
+
+
+def prompt_with_default(prompt: str, default: str = "") -> str:
+    """Запрос значения с Enter-по-умолчанию."""
+    if default:
+        value = input(f"{prompt} [{default}]: ").strip()
+        return value or default
+    return input(f"{prompt}: ").strip()
+
+
+def prompt_session_cashier(settings_path: Path, settings: dict[str, str]) -> str:
+    current = str(settings.get("DEFAULT_CASHIER_NAME", "")).strip()
+    while True:
+        cashier_name = prompt_with_default("Введите имя кассира на текущую смену", current).strip()
+        if cashier_name:
+            settings["DEFAULT_CASHIER_NAME"] = cashier_name
+            save_settings(settings_path, settings)
+            print(f"Кассир текущего сеанса: {cashier_name}")
+            return cashier_name
+        print("Имя кассира не может быть пустым.")
+
+
+def prompt_payment_type(settings_path: Path, settings: dict[str, str]) -> str:
+    """
+    Спрашивает тип оплаты.
+
+    Для безнала конкретный способ приема выбирается настройкой:
+    CASHLESS_PAYMENT_PROVIDER = EXTERNAL_TERMINAL / TBANK_SBP
+    """
+    current = str(settings.get("DEFAULT_PAYMENT_TYPE", "CASHLESS")).strip().upper() or "CASHLESS"
+    if current == "SBP":
+        current = "CASHLESS"
+
+    provider = normalize_cashless_payment_provider(settings.get("CASHLESS_PAYMENT_PROVIDER", "EXTERNAL_TERMINAL"))
+    default_label = "Наличные" if current == "CASH" else "Безнал"
+
+    print("\nТип оплаты:")
+    print("  1. Наличные")
+    print(f"  2. Безнал ({cashless_provider_label(provider)})")
+    print("\nСпособ безналичной оплаты меняется в настройках: CASHLESS_PAYMENT_PROVIDER.")
+    while True:
+        raw = prompt_with_default("Выберите тип оплаты", default_label)
+        if raw.strip() == "1":
+            raw = "Наличные"
+        elif raw.strip() == "2":
+            raw = "Безнал"
+
+        try:
+            payment_type = parse_payment_type(raw)
+            if payment_type == "SBP":
+                # Ручной ввод "СБП" оставляем как быстрый способ выбрать T-Банк.
+                settings["DEFAULT_PAYMENT_TYPE"] = "CASHLESS"
+                settings["CASHLESS_PAYMENT_PROVIDER"] = "TBANK_SBP"
+                settings["TBANK_SBP_ENABLED"] = "1"
+                save_settings(settings_path, settings)
+                return "SBP"
+
+            if payment_type == "CASHLESS":
+                settings["DEFAULT_PAYMENT_TYPE"] = "CASHLESS"
+                save_settings(settings_path, settings)
+                provider = normalize_cashless_payment_provider(settings.get("CASHLESS_PAYMENT_PROVIDER", "EXTERNAL_TERMINAL"))
+                return "SBP" if provider == "TBANK_SBP" else "CASHLESS"
+
+            settings["DEFAULT_PAYMENT_TYPE"] = payment_type
+            save_settings(settings_path, settings)
+            return payment_type
+        except Exception as exc:
+            print(f"Ошибка: {exc}")
+
+
+def prompt_email_contact() -> Optional[str]:
+    while True:
+        raw = input("Email покупателя: ").strip()
+        if not raw:
+            return None
+        email, _phone = split_buyer_contact_optional(raw)
+        if email:
+            return email
+        print("Email не распознан. Пример: client@example.com")
+
+
+def prompt_phone_contact() -> Optional[str]:
+    while True:
+        raw = input("Телефон покупателя: ").strip()
+        if not raw:
+            return None
+        _email, phone = split_buyer_contact_optional(raw)
+        if phone:
+            return phone
+        print("Телефон не распознан. Пример: +79991234567 или 89991234567")
+
+
+def prompt_buyer_contacts() -> tuple[Optional[str], Optional[str]]:
+    """
+    Сначала спрашивает, какой контакт покупателя вводить:
+    email, телефон или оба варианта.
+
+    Вариант "не указывать" удалён — для электронного чека оператор должен
+    выбрать хотя бы один контакт покупателя.
+    """
+    print("\nКонтакт покупателя для электронного чека:")
+    print("  1. Email")
+    print("  2. Телефон")
+    print("  3. Email + телефон")
+
+    while True:
+        choice = input("Выберите вариант [1/2/3]: ").strip().lower()
+
+        if choice in {"1", "email", "e", "емайл", "почта"}:
+            email = prompt_email_contact()
+            if email:
+                return email, None
+            print("Email обязателен для выбранного варианта.")
+
+        elif choice in {"2", "телефон", "phone", "p", "т"}:
+            phone = prompt_phone_contact()
+            if phone:
+                return None, phone
+            print("Телефон обязателен для выбранного варианта.")
+
+        elif choice in {"3", "оба", "both", "email+phone", "email + phone", "e+p"}:
+            email = prompt_email_contact()
+            phone = prompt_phone_contact()
+            if email and phone:
+                return email, phone
+            print("Для выбранного варианта нужно указать и email, и телефон.")
+
+        else:
+            print("Введите 1 для email, 2 для телефона или 3 для обоих вариантов.")
+
+def prompt_buyer_type_and_legal(settings: dict[str, str]) -> tuple[str, Optional[str], Optional[str]]:
+    print("\nТип покупателя:")
+    print("  1. Физлицо")
+    print("  2. Юрлицо / ИП")
+    while True:
+        answer = input("Выберите тип покупателя [Enter = 1]: ").strip().lower()
+        if answer in {"", "1", "ф", "физ", "физлицо"}:
+            return "INDIVIDUAL", None, None
+        if answer in {"2", "ю", "юр", "юл", "юрлицо", "ип", "организация"}:
+            break
+        print("Введите 1 для физлица или 2 для юрлица / ИП.")
+
+    while True:
+        buyer_inn = normalize_buyer_inn(input("ИНН юрлица / ИП: ").strip())
+        if buyer_inn and len(buyer_inn) in {10, 12}:
+            break
+        print("ИНН должен содержать 10 цифр для юрлица или 12 цифр для ИП.")
+
+    legal_name = input("Наименование юрлица / ИП [Enter = найти по ИНН]: ").strip() or None
+    if not legal_name:
+        legal_name = lookup_legal_entity_name_by_inn(buyer_inn, settings)
+    while not legal_name:
+        legal_name = input("Введите наименование юрлица / ИП вручную: ").strip() or None
+        if not legal_name:
+            print("Для чека на юрлицо / ИП нужно название покупателя.")
+    return "LEGAL_ENTITY", legal_name, buyer_inn
+
+
+def prompt_tax_mode(settings_path: Path, settings: dict[str, str]) -> str:
+    """
+    Показывает список систем налогообложения на русском языке
+    и принимает выбор цифрой.
+    """
+    current = str(settings.get("DEFAULT_TAX_MODE", "SIMPLE_WO")).strip().upper() or "SIMPLE_WO"
+    current_label = tax_mode_label(current)
+
+    print("\nСистема налогообложения:")
+    print("  0. По умолчанию на кассе / в Dreamkas")
+    print("  1. Общая система налогообложения — ОСН")
+    print("  2. Упрощённая система — доходы — УСН доходы")
+    print("  3. Упрощённая система — доходы минус расходы — УСН доходы-расходы")
+    print("  4. Единый сельскохозяйственный налог — ЕСХН")
+    print("  5. Патентная система налогообложения — ПСН / патент")
+    print("  6. Единый налог на вменённый доход — ЕНВД, архивный режим")
+    print(f"\nТекущее значение по умолчанию: {current_label}")
+
+    while True:
+        raw = input("Выберите систему налогообложения [0/1/2/3/4/5/6, Enter = текущее]: ").strip()
+        if not raw:
+            tax_mode = current
+        else:
+            try:
+                tax_mode = parse_tax_mode(raw)
+            except Exception as exc:
+                print(f"Ошибка: {exc}")
+                continue
+
+        print(f"Выбрано: {tax_mode_label(tax_mode)}")
+        settings["DEFAULT_TAX_MODE"] = tax_mode
+        save_settings(settings_path, settings)
+        return tax_mode
+
+
+def prompt_sale_metadata(settings_path: Path, settings: dict[str, str], cashier_name: str) -> ReceiptInputMeta:
+    print("\nЗаполнение реквизитов нового чека")
+    print("-" * 72)
+    payment_type = prompt_payment_type(settings_path, settings)
+    buyer_email, buyer_phone = prompt_buyer_contacts()
+    buyer_type, legal_name, buyer_inn = prompt_buyer_type_and_legal(settings)
+    tax_mode = prompt_tax_mode(settings_path, settings)
+    return ReceiptInputMeta(
+        payment_type=payment_type,
+        buyer_email=buyer_email,
+        buyer_phone=buyer_phone,
+        buyer_type=buyer_type,
+        buyer_legal_name=legal_name,
+        buyer_inn=buyer_inn,
+        tax_mode=tax_mode,
+        cashier_name=cashier_name,
+    )
+
+
+def read_buyer_legal_entity_template(ws: Any, settings: dict[str, str]) -> tuple[Optional[str], Optional[str], str, str, str, Optional[str], Optional[str], int]:
+    """
+    Шаблон v6.30:
+      1 строка — тип оплаты
+      2 строка — email покупателя
+      3 строка — телефон покупателя
+      4 строка — тип покупателя: Физлицо / Юрлицо
+      5 строка — наименование юрлица / ИП
+      6 строка — ИНН юрлица / ИП
+      7 строка — СНО
+      8 строка — кассир
+      9 строка — шапка таблицы
+      10 строка и ниже — позиции
+    """
+    buyer_email, buyer_phone = read_buyer_contacts_new_template(ws)
+    legal_name = read_meta_cell(ws, 5).strip() or None
+    buyer_inn = normalize_buyer_inn(read_meta_cell(ws, 6))
+    buyer_type = normalize_buyer_type(read_meta_cell(ws, 4), legal_name, buyer_inn)
+
+    # Если пользователь ввёл только ИНН, пробуем получить название юрлица/ИП автоматически.
+    if buyer_type == "LEGAL_ENTITY" and buyer_inn and not legal_name:
+        legal_name = lookup_legal_entity_name_by_inn(buyer_inn, settings)
+
+        # Чтобы пользователь видел, что было подставлено, можно записать название обратно в Excel.
+        # Это не критично: если файл открыт и заблокирован, просто пропускаем.
+        if legal_name and bool_setting(settings, "DADATA_UPDATE_EXCEL_NAME", True):
+            try:
+                ws.cell(row=5, column=2).value = legal_name
+            except Exception:
+                pass
+
+    tax_mode = parse_tax_mode(read_meta_cell(ws, 7))
+    cashier_name = read_meta_cell(ws, 8) or "Не указан"
+    return buyer_email, buyer_phone, buyer_type, tax_mode, cashier_name, legal_name, buyer_inn, 10
+
+
+def build_legal_entity_ffd_tags(
+    buyer_type: str,
+    legal_name: Optional[str],
+    buyer_inn: Optional[str],
+    settings: dict[str, str],
+) -> list[dict[str, Any]]:
+    """
+    Для расчётов с юрлицом / ИП добавляем ФФД-теги:
+      1227 — покупатель (клиент)
+      1228 — ИНН покупателя (клиента)
+
+    Dreamkas /api/receipts поддерживает массив tags с номером тега и значением.
+    Если конкретная касса/прошивка не примет строковые теги, можно отключить отправку:
+      SEND_LEGAL_ENTITY_TAGS_TO_DREAMKAS = 0
+    """
+    if buyer_type != "LEGAL_ENTITY":
+        return []
+    if str(settings.get("SEND_LEGAL_ENTITY_TAGS_TO_DREAMKAS", "1")).strip() in {"0", "false", "False", "нет", "Нет"}:
+        return []
+
+    tags: list[dict[str, Any]] = []
+    if legal_name:
+        tags.append({"tag": 1227, "value": str(legal_name)})
+    if buyer_inn:
+        tags.append({"tag": 1228, "value": str(buyer_inn)})
+    return tags
+
 def build_cashier_payload(cashier_name: str) -> dict[str, str]:
     """
     Dreamkas /api/receipts currently rejects the top-level "cashier" field.
@@ -871,28 +1604,50 @@ def build_cashier_payload(cashier_name: str) -> dict[str, str]:
     return {}
 
 
-def read_excel_receipt(excel_path: Path, settings: dict[str, str]) -> ReceiptDraft:
+def read_excel_receipt(excel_path: Path, settings: dict[str, str], meta: Optional[ReceiptInputMeta] = None) -> ReceiptDraft:
     excel_path = ensure_excel_template_available(excel_path)
 
     wb = load_workbook(filename=excel_path, data_only=True)
     ws = wb.active
 
-    payment_type = parse_payment_type(read_meta_cell(ws, 1))
-
-    # Новый шаблон:
-    # 1 тип оплаты, 2 email, 3 телефон, 4 СНО, 5 кассир, 6 шапка, с 7 строки позиции.
-    # Старый шаблон:
-    # 1 тип оплаты, 2 email/телефон, 3 СНО, 4 кассир, 5 шапка, с 6 строки позиции.
-    if looks_like_header_row(ws, 6):
-        buyer_email, buyer_phone = read_buyer_contacts_new_template(ws)
-        tax_mode = parse_tax_mode(read_meta_cell(ws, 4))
-        cashier_name = read_meta_cell(ws, 5) or "Не указан"
-        first_position_row = 7
+    if meta is not None:
+        payment_type = meta.payment_type
+        buyer_email = meta.buyer_email
+        buyer_phone = meta.buyer_phone
+        buyer_type = meta.buyer_type
+        buyer_legal_name = meta.buyer_legal_name
+        buyer_inn = meta.buyer_inn
+        tax_mode = meta.tax_mode
+        cashier_name = meta.cashier_name
+        first_position_row = 2 if looks_like_header_row(ws, 1) else 1
     else:
-        buyer_email, buyer_phone = split_buyer_contact(read_meta_cell(ws, 2))
-        tax_mode = parse_tax_mode(read_meta_cell(ws, 3))
-        cashier_name = read_meta_cell(ws, 4) or "Не указан"
-        first_position_row = 6
+        # Совместимость со старыми Excel-шаблонами.
+        payment_type = parse_payment_type(read_meta_cell(ws, 1))
+        buyer_type = "INDIVIDUAL"
+        buyer_legal_name: Optional[str] = None
+        buyer_inn: Optional[str] = None
+        if looks_like_header_row(ws, 9):
+            (
+                buyer_email, buyer_phone, buyer_type, tax_mode, cashier_name,
+                buyer_legal_name, buyer_inn, first_position_row,
+            ) = read_buyer_legal_entity_template(ws, settings)
+            if buyer_legal_name and bool_setting(settings, "DADATA_UPDATE_EXCEL_NAME", True):
+                try:
+                    wb.save(excel_path)
+                except Exception as exc:
+                    print(f"Внимание: не удалось записать найденное название в Excel: {exc}")
+        elif looks_like_header_row(ws, 6):
+            buyer_email, buyer_phone = read_buyer_contacts_new_template(ws)
+            tax_mode = parse_tax_mode(read_meta_cell(ws, 4))
+            cashier_name = read_meta_cell(ws, 5) or "Не указан"
+            first_position_row = 7
+        elif looks_like_header_row(ws, 1):
+            raise ValueError("Excel содержит только позиции. Реквизиты чека должны быть введены через терминал.")
+        else:
+            buyer_email, buyer_phone = split_buyer_contact(read_meta_cell(ws, 2))
+            tax_mode = parse_tax_mode(read_meta_cell(ws, 3))
+            cashier_name = read_meta_cell(ws, 4) or "Не указан"
+            first_position_row = 6
 
     positions: list[ReceiptPosition] = []
     for row in range(first_position_row, ws.max_row + 1):
@@ -967,7 +1722,8 @@ def read_excel_receipt(excel_path: Path, settings: dict[str, str]) -> ReceiptDra
         "payments": [
             {
                 "sum": total_kopecks,
-                "type": payment_type,
+                # Для Dreamkas платеж по СБП является безналичным.
+                "type": "CASHLESS" if payment_type == "SBP" else payment_type,
             }
         ],
         "attributes": attributes,
@@ -975,6 +1731,14 @@ def read_excel_receipt(excel_path: Path, settings: dict[str, str]) -> ReceiptDra
             "priceSum": total_kopecks,
         },
     }
+
+    legal_entity_tags = build_legal_entity_ffd_tags(buyer_type, buyer_legal_name, buyer_inn, settings)
+    if legal_entity_tags:
+        existing_tags = payload.get("tags")
+        if isinstance(existing_tags, list):
+            payload["tags"] = existing_tags + legal_entity_tags
+        else:
+            payload["tags"] = legal_entity_tags
 
     cashier_payload = build_cashier_payload(cashier_name)
     if cashier_payload:
@@ -985,6 +1749,9 @@ def read_excel_receipt(excel_path: Path, settings: dict[str, str]) -> ReceiptDra
         payment_type=payment_type,
         buyer_email=buyer_email,
         buyer_phone=buyer_phone,
+        buyer_type=buyer_type,
+        buyer_legal_name=buyer_legal_name,
+        buyer_inn=buyer_inn,
         tax_mode=tax_mode,
         cashier_name=cashier_name,
         positions=positions,
@@ -995,45 +1762,20 @@ def read_excel_receipt(excel_path: Path, settings: dict[str, str]) -> ReceiptDra
 
 def clear_excel_template_after_success(excel_path: Path) -> None:
     """
-    Очищает Excel-шаблон после успешной фискализации.
+    Очищает только товарные позиции.
 
-    Оставляет шапку и подсказки, но очищает поля ввода и товарные позиции.
-    Если Excel-файл открыт и Windows заблокировал сохранение, выводит предупреждение.
+    Реквизиты чека вводятся в терминале, поэтому в новом Excel-шаблоне
+    нет строк оплаты, покупателя, СНО и кассира.
     """
     excel_path = ensure_excel_template_available(excel_path)
-
     wb = load_workbook(filename=excel_path)
     ws = wb.active
-
-    is_new_template = looks_like_header_row(ws, 6)
-    if is_new_template:
-        meta_rows = [1, 2, 3, 4, 5]
-        first_position_row = 7
-    else:
-        meta_rows = [1, 2, 3, 4]
-        first_position_row = 6
-
-    def clear_meta_row(row: int) -> None:
-        a_value = ws.cell(row=row, column=1).value
-        b_value = ws.cell(row=row, column=2).value
-        a_text = str(a_value or "").strip().lower().replace("ё", "е")
-        # Если A похожа на подпись, очищаем B. Если подписи нет — очищаем A.
-        label_words = ["тип", "email", "телефон", "сно", "налого", "кассир", "покуп"]
-        if b_value is not None or any(word in a_text for word in label_words) or str(a_value or "").strip().endswith(":"):
-            ws.cell(row=row, column=2).value = None
-        else:
-            ws.cell(row=row, column=1).value = None
-
-    for row in meta_rows:
-        clear_meta_row(row)
-
+    first_position_row = 2 if looks_like_header_row(ws, 1) else 1
     max_row_to_clear = max(ws.max_row, first_position_row + 150)
     for row in range(first_position_row, max_row_to_clear + 1):
         for col in range(1, 6):
             ws.cell(row=row, column=col).value = None
-
     wb.save(excel_path)
-
 
 def format_money(kopecks: int) -> str:
     return f"{kopecks / 100:.2f} ₽"
@@ -1044,10 +1786,14 @@ def print_precheck(draft: ReceiptDraft) -> None:
     print("ПРЕДЧЕК ДЛЯ ПРОВЕРКИ")
     print("=" * 72)
     print(f"Тип операции:        {draft.payload.get('type')}")
-    print(f"Тип оплаты:          {draft.payment_type}")
+    print(f"Тип оплаты:          {payment_label(draft.payment_type)}")
     print(f"Покупатель email:    {draft.buyer_email or '-'}")
     print(f"Покупатель телефон:  {draft.buyer_phone or '-'}")
-    print(f"СНО:                 {draft.tax_mode}")
+    print(f"Тип покупателя:      {'Юрлицо / ИП' if draft.buyer_type == 'LEGAL_ENTITY' else 'Физлицо'}")
+    if draft.buyer_type == 'LEGAL_ENTITY':
+        print(f"Покупатель юрлицо:   {draft.buyer_legal_name or '-'}")
+        print(f"ИНН покупателя:      {draft.buyer_inn or '-'}")
+    print(f"СНО:                 {tax_mode_label(draft.tax_mode)}")
     print(f"Кассир:              {draft.cashier_name}")
     print(f"External ID:         {draft.external_id}")
     if draft.parent_external_id:
@@ -1089,6 +1835,9 @@ def init_db(db_path: Path) -> sqlite3.Connection:
             payment_type TEXT,
             buyer_email TEXT,
             buyer_phone TEXT,
+            buyer_type TEXT,
+            buyer_legal_name TEXT,
+            buyer_inn TEXT,
             tax_mode TEXT,
             cashier_name TEXT,
             amount_kopecks INTEGER,
@@ -1108,7 +1857,13 @@ def init_db(db_path: Path) -> sqlite3.Connection:
             payload_hash TEXT,
             precheck_hash TEXT,
             precheck_json TEXT,
-            excel_file_path TEXT
+            excel_file_path TEXT,
+            sbp_payment_id TEXT,
+            sbp_order_id TEXT,
+            sbp_status TEXT,
+            sbp_qr_payload TEXT,
+            sbp_qr_path TEXT,
+            sbp_json TEXT
         )
         """
     )
@@ -1131,6 +1886,15 @@ def ensure_db_columns(conn: sqlite3.Connection) -> None:
         "precheck_hash": "TEXT",
         "precheck_json": "TEXT",
         "excel_file_path": "TEXT",
+        "buyer_type": "TEXT",
+        "buyer_legal_name": "TEXT",
+        "buyer_inn": "TEXT",
+        "sbp_payment_id": "TEXT",
+        "sbp_order_id": "TEXT",
+        "sbp_status": "TEXT",
+        "sbp_qr_payload": "TEXT",
+        "sbp_qr_path": "TEXT",
+        "sbp_json": "TEXT",
     }
     for column, column_type in required.items():
         if column not in existing:
@@ -1191,6 +1955,9 @@ def precheck_to_dict(draft: ReceiptDraft, excel_path: Optional[Path] = None) -> 
         "payment_type": draft.payment_type,
         "buyer_email": draft.buyer_email,
         "buyer_phone": draft.buyer_phone,
+        "buyer_type": draft.buyer_type,
+        "buyer_legal_name": draft.buyer_legal_name,
+        "buyer_inn": draft.buyer_inn,
         "tax_mode": draft.tax_mode,
         "cashier_name": draft.cashier_name,
         "device_id": draft.payload.get("deviceId"),
@@ -1222,6 +1989,9 @@ def precheck_for_hash(draft: ReceiptDraft) -> dict[str, Any]:
         "payment_type": draft.payment_type,
         "buyer_email": draft.buyer_email,
         "buyer_phone": draft.buyer_phone,
+        "buyer_type": draft.buyer_type,
+        "buyer_legal_name": draft.buyer_legal_name,
+        "buyer_inn": draft.buyer_inn,
         "tax_mode": draft.tax_mode,
         "cashier_name": draft.cashier_name,
         "total_kopecks": draft.total_kopecks,
@@ -1243,13 +2013,27 @@ def validate_draft_for_send(draft: ReceiptDraft) -> tuple[list[str], list[str]]:
     warnings: list[str] = []
 
     if not draft.buyer_email and not draft.buyer_phone:
-        errors.append("Не указан email или телефон покупателя. Для электронного чека нужно заполнить хотя бы одно поле.")
+        warnings.append("Email/телефон покупателя не указан. Электронная отправка чека покупателю будет недоступна.")
     if draft.buyer_email and "@" not in draft.buyer_email:
         errors.append(f"Email покупателя выглядит неверно: {draft.buyer_email}")
     if draft.buyer_phone:
         digits = re.sub(r"\D", "", draft.buyer_phone)
         if len(digits) < 10:
             errors.append(f"Телефон покупателя выглядит неверно: {draft.buyer_phone}")
+    if draft.buyer_type == "LEGAL_ENTITY":
+        if not draft.buyer_inn:
+            errors.append("Для чека на юрлицо / ИП нужно заполнить ИНН покупателя.")
+        elif len(re.sub(r"\D", "", draft.buyer_inn)) not in {10, 12}:
+            errors.append(f"ИНН покупателя должен содержать 10 или 12 цифр: {draft.buyer_inn}")
+
+        if not draft.buyer_legal_name:
+            errors.append(
+                "Не удалось определить наименование юрлица / ИП по ИНН. "
+                "Введите наименование юрлица / ИП вручную или настройте DADATA_TOKEN."
+            )
+
+        if not any(tag.get("tag") == 1228 for tag in draft.payload.get("tags", []) if isinstance(tag, dict)):
+            warnings.append("Данные юрлица сохраняются локально, но ФФД-теги 1227/1228 не отправляются в Dreamkas. Проверь настройку SEND_LEGAL_ENTITY_TAGS_TO_DREAMKAS.")
     if not draft.cashier_name or draft.cashier_name.strip().lower() in {"не указан", "admin", "administrator", "администратор"}:
         warnings.append("Имя кассира пустое или похоже на значение по умолчанию. В Excel лучше указать реальное имя кассира.")
     if not draft.positions:
@@ -1272,7 +2056,11 @@ def validate_draft_for_send(draft: ReceiptDraft) -> tuple[list[str], list[str]]:
             errors.append(f"Позиция {index}: цена должна быть больше 0.")
         if p.price_sum_kopecks <= 0:
             errors.append(f"Позиция {index}: сумма должна быть больше 0.")
-        if p.tax not in {"NDS_NO_TAX", "NDS_0", "NDS_10", "NDS_20", "NDS_10_110", "NDS_20_120"}:
+        if p.tax not in {
+            "NDS_NO_TAX", "NDS_0", "NDS_5", "NDS_7", "NDS_10", "NDS_20", "NDS_22",
+            "NDS_5_CALCULATED", "NDS_7_CALCULATED", "NDS_10_CALCULATED", "NDS_20_CALCULATED", "NDS_22_CALCULATED",
+            "NDS_10_110", "NDS_20_120",
+        }:
             errors.append(f"Позиция {index}: неизвестная ставка НДС: {p.tax}")
         if p.item_type not in {"COUNTABLE", "SERVICE"}:
             errors.append(f"Позиция {index}: неизвестный тип позиции: {p.item_type}")
@@ -1391,10 +2179,11 @@ def db_insert_draft(conn: sqlite3.Connection, draft: ReceiptDraft, excel_path: O
         """
         INSERT INTO receipts (
             external_id, status, created_at, payment_type, buyer_email, buyer_phone,
+            buyer_type, buyer_legal_name, buyer_inn,
             tax_mode, cashier_name, amount_kopecks, receipt_type, parent_external_id,
             parent_receipt_id, refund_mode, refunded_positions_json, request_json, payload_hash,
             precheck_hash, precheck_json, excel_file_path
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             draft.external_id,
@@ -1403,6 +2192,9 @@ def db_insert_draft(conn: sqlite3.Connection, draft: ReceiptDraft, excel_path: O
             draft.payment_type,
             draft.buyer_email,
             draft.buyer_phone,
+            draft.buyer_type,
+            draft.buyer_legal_name,
+            draft.buyer_inn,
             draft.tax_mode,
             draft.cashier_name,
             draft.total_kopecks,
@@ -1768,6 +2560,10 @@ def save_receipt_txt(
     lines.append(f"Тип оплаты: {draft.payment_type}")
     lines.append(f"Email: {draft.buyer_email or '-'}")
     lines.append(f"Телефон: {draft.buyer_phone or '-'}")
+    lines.append(f"Тип покупателя: {'Юрлицо / ИП' if draft.buyer_type == 'LEGAL_ENTITY' else 'Физлицо'}")
+    if draft.buyer_type == 'LEGAL_ENTITY':
+        lines.append(f"Покупатель: {draft.buyer_legal_name or '-'}")
+        lines.append(f"ИНН покупателя: {draft.buyer_inn or '-'}")
     lines.append(f"СНО: {draft.tax_mode}")
     lines.append(f"Кассир из Excel: {draft.cashier_name}")
     dreamkas_cashier = receipt.get("cashier") if isinstance(receipt, dict) else None
@@ -1815,6 +2611,91 @@ def find_pdf_font() -> tuple[str, Optional[str]]:
     return "Helvetica", None
 
 
+def receipt_first_value(obj: Any, *keys: str) -> Optional[Any]:
+    """Рекурсивно ищет первое непустое значение по нескольким возможным именам ключей."""
+    wanted = {k.lower() for k in keys}
+
+    def walk(value: Any) -> Optional[Any]:
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if str(k).lower() in wanted and v not in (None, ""):
+                    return v
+            for v in value.values():
+                found = walk(v)
+                if found not in (None, ""):
+                    return found
+        elif isinstance(value, list):
+            for item in value:
+                found = walk(item)
+                if found not in (None, ""):
+                    return found
+        return None
+
+    return walk(obj)
+
+
+def receipt_str(value: Any, default: str = "-") -> str:
+    if value in (None, ""):
+        return default
+    return str(value)
+
+
+def receipt_operation_ru(operation_type: str) -> str:
+    mapping = {
+        "SALE": "ПРИХОД",
+        "REFUND": "ВОЗВРАТ ПРИХОДА",
+        "SALE_REFUND": "ВОЗВРАТ ПРИХОДА",
+        "PURCHASE": "РАСХОД",
+        "PURCHASE_REFUND": "ВОЗВРАТ РАСХОДА",
+    }
+    return mapping.get(str(operation_type or "").upper(), str(operation_type or "-"))
+
+
+def payment_type_ru(payment_type: str) -> str:
+    mapping = {
+        "CASH": "НАЛИЧНЫМИ",
+        "CASHLESS": "БЕЗНАЛИЧНЫМИ",
+        "CARD": "БЕЗНАЛИЧНЫМИ",
+        "ELECTRON": "БЕЗНАЛИЧНЫМИ",
+    }
+    return mapping.get(str(payment_type or "").upper(), str(payment_type or "-"))
+
+
+def tax_ru(tax: str) -> str:
+    mapping = {
+        "NDS_NO_TAX": "БЕЗ НДС",
+        "NO_VAT": "БЕЗ НДС",
+        "NONE": "БЕЗ НДС",
+        "VAT_0": "НДС 0%",
+        "NDS_0": "НДС 0%",
+        "VAT_10": "НДС 10%",
+        "NDS_10": "НДС 10%",
+        "VAT_20": "НДС 20%",
+        "NDS_20": "НДС 20%",
+        "VAT_10_110": "НДС 10/110",
+        "NDS_10_110": "НДС 10/110",
+        "VAT_20_120": "НДС 20/120",
+        "NDS_20_120": "НДС 20/120",
+    }
+    return mapping.get(str(tax or "").upper(), str(tax or "-"))
+
+
+def item_type_ru(item_type: str) -> str:
+    mapping = {
+        "SERVICE": "УСЛУГА",
+        "COUNTABLE": "ТОВАР",
+        "PIECE": "ТОВАР",
+        "WEIGHT": "ТОВАР",
+        "PRODUCT": "ТОВАР",
+    }
+    return mapping.get(str(item_type or "").upper(), str(item_type or "-"))
+
+
+def paragraph_safe(text: Any) -> str:
+    import html
+    return html.escape(receipt_str(text, ""))
+
+
 def save_receipt_pdf(
     pdf_path: Path,
     draft: ReceiptDraft,
@@ -1823,12 +2704,17 @@ def save_receipt_pdf(
     qr_path: Optional[Path],
     qr_data: Optional[str],
 ) -> None:
-    """Сохраняет человекочитаемый PDF-чек. Требует reportlab."""
+    """
+    Сохраняет PDF в виде кассовой ленты.
+
+    Это не замена фискальному документу из ККТ/ОФД, а удобная печатная/архивная
+    копия с основными реквизитами: продавец, дата/место расчета, позиции,
+    итоги, форма оплаты, ФН/ФД/ФП, РН ККТ, QR-код и ссылка проверки.
+    """
     from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import mm
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, HRFlowable
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
 
@@ -1839,86 +2725,250 @@ def save_receipt_pdf(
         except Exception:
             font_name = "Helvetica"
 
+    # 80 мм — типичная ширина кассовой ленты. Высоту делаем расчетной,
+    # чтобы длинный чек помещался на один узкий PDF-лист.
+    positions_count = max(1, len(draft.positions))
+    estimated_height_mm = max(230, 170 + positions_count * 26)
+    page_width = 80 * mm
+    page_height = estimated_height_mm * mm
+
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
-    doc = SimpleDocTemplate(str(pdf_path), pagesize=A4, rightMargin=14*mm, leftMargin=14*mm, topMargin=14*mm, bottomMargin=14*mm)
+    doc = SimpleDocTemplate(
+        str(pdf_path),
+        pagesize=(page_width, page_height),
+        rightMargin=4 * mm,
+        leftMargin=4 * mm,
+        topMargin=5 * mm,
+        bottomMargin=5 * mm,
+    )
+
     styles = getSampleStyleSheet()
-    base = ParagraphStyle("ReceiptBase", parent=styles["Normal"], fontName=font_name, fontSize=9, leading=12)
-    h1 = ParagraphStyle("ReceiptH1", parent=base, fontSize=15, leading=18, spaceAfter=8)
-    h2 = ParagraphStyle("ReceiptH2", parent=base, fontSize=11, leading=14, spaceBefore=8, spaceAfter=4)
+    base = ParagraphStyle(
+        "ReceiptTapeBase",
+        parent=styles["Normal"],
+        fontName=font_name,
+        fontSize=7.0,
+        leading=8.4,
+        alignment=1,
+        spaceAfter=1.2,
+    )
+    small = ParagraphStyle(
+        "ReceiptTapeSmall",
+        parent=base,
+        fontSize=6.4,
+        leading=7.5,
+        alignment=0,
+        spaceAfter=0.8,
+    )
+    center = ParagraphStyle(
+        "ReceiptTapeCenter",
+        parent=base,
+        alignment=1,
+        fontSize=7.0,
+        leading=8.4,
+        spaceAfter=1.2,
+    )
+    title_style = ParagraphStyle(
+        "ReceiptTapeTitle",
+        parent=base,
+        fontSize=8.4,
+        leading=10.0,
+        alignment=1,
+        spaceAfter=2,
+    )
+    bold = ParagraphStyle(
+        "ReceiptTapeBold",
+        parent=base,
+        fontSize=7.2,
+        leading=8.6,
+        alignment=0,
+        spaceAfter=1,
+    )
+    right = ParagraphStyle(
+        "ReceiptTapeRight",
+        parent=base,
+        fontSize=7.0,
+        leading=8.4,
+        alignment=2,
+        spaceAfter=1,
+    )
+
+    def p(text: Any, style: ParagraphStyle = small) -> Paragraph:
+        return Paragraph(paragraph_safe(text), style)
+
+    def line() -> HRFlowable:
+        return HRFlowable(width="100%", thickness=0.35, color=colors.black, spaceBefore=2, spaceAfter=2)
+
+    def kv(label: str, value: Any) -> Table:
+        table = Table(
+            [[p(label, small), p(value, small)]],
+            colWidths=[27 * mm, 45 * mm],
+            hAlign="LEFT",
+        )
+        table.setStyle(TableStyle([
+            ("FONT", (0, 0), (-1, -1), font_name, 6.4),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0.5),
+        ]))
+        return table
+
+    op_type = str(receipt.get("type") or draft.payload.get("type") or "").upper()
+    op_ru = receipt_operation_ru(op_type)
+    receipt_id = receipt.get("id", "-")
+
+    # Реквизиты продавца/места расчета. Dreamkas может вернуть разные имена ключей,
+    # поэтому ищем несколько популярных вариантов рекурсивно.
+    seller_name = receipt_first_value(
+        receipt,
+        "user", "userName", "organizationName", "companyName", "legalName", "retailPlace",
+        "shopName", "sellerName",
+    )
+    seller_inn = receipt_first_value(receipt, "inn", "userInn", "companyInn", "sellerInn")
+    payment_address = receipt_first_value(
+        receipt,
+        "address", "paymentAddress", "retailPlaceAddress", "calculationAddress", "realAddress"
+    )
+    calculation_place = receipt_first_value(receipt, "retailPlace", "paymentPlace", "calculationPlace", "place")
+
+    created_at = (
+        receipt.get("createdAt")
+        or receipt.get("processedAt")
+        or receipt.get("fiscalizedAt")
+        or operation.get("createdAt")
+        or operation.get("updatedAt")
+        or datetime.now().isoformat(timespec="seconds")
+    )
+
+    amount = int(receipt.get("amount", draft.total_kopecks) or draft.total_kopecks)
+
+    fn = receipt.get("fnNumber") or receipt_first_value(receipt, "fnNumber", "fiscalDriveNumber", "fn")
+    fd = receipt.get("fiscalDocumentNumber") or receipt_first_value(receipt, "fiscalDocumentNumber", "fd")
+    fp = receipt.get("fiscalDocumentSign") or receipt_first_value(receipt, "fiscalDocumentSign", "fiscalSign", "fp", "fpd")
+    registry_number = receipt.get("registryNumber") or receipt_first_value(receipt, "registryNumber", "kktRegNumber", "kktRegistrationNumber")
+    kkt_number = receipt_first_value(receipt, "kktFactoryNumber", "kktSerialNumber", "serialNumber")
+    shift_number = receipt_first_value(receipt, "shiftNumber", "shift")
+    doc_number = receipt_first_value(receipt, "documentNumber", "receiptNumber", "requestNumber")
+    check_url = receipt.get("checkURL") or receipt_first_value(receipt, "checkURL", "ofdCheckUrl", "checkUrl", "url")
+
+    dreamkas_cashier = receipt.get("cashier") if isinstance(receipt, dict) else None
+    cashier_from_receipt = None
+    if isinstance(dreamkas_cashier, dict):
+        cashier_from_receipt = dreamkas_cashier.get("name")
+    cashier_name = cashier_from_receipt or draft.cashier_name or "-"
 
     story: list[Any] = []
-    title = "ЧЕК ВОЗВРАТА DREAMKAS" if str(draft.payload.get("type") or "").upper() == "REFUND" else "ЧЕК DREAMKAS"
-    story.append(Paragraph(title, h1))
-    story.append(Paragraph(f"Дата сохранения: {datetime.now().isoformat(timespec='seconds')}", base))
-    story.append(Paragraph(f"External ID: {draft.external_id}", base))
-    story.append(Paragraph(f"Operation ID: {operation.get('id', '-')}", base))
-    story.append(Paragraph(f"Receipt ID: {receipt.get('id', '-')}", base))
+
+    story.append(p("КАССОВЫЙ ЧЕК", title_style))
+    story.append(p(op_ru, title_style))
+    story.append(line())
+
+    if seller_name:
+        story.append(p(str(seller_name).upper(), center))
+    if seller_inn:
+        story.append(p(f"ИНН {seller_inn}", center))
+    if payment_address:
+        story.append(p(payment_address, center))
+    if calculation_place and calculation_place != payment_address:
+        story.append(p(f"МЕСТО РАСЧЕТОВ: {calculation_place}", center))
+
+    story.append(line())
+    story.append(kv("ДАТА/ВРЕМЯ", created_at))
+    if shift_number:
+        story.append(kv("СМЕНА", shift_number))
+    if doc_number:
+        story.append(kv("№ ЗА СМЕНУ", doc_number))
+    story.append(kv("ПРИЗНАК", op_ru))
+    story.append(kv("СНО", draft.tax_mode))
+    story.append(kv("КАССИР", cashier_name))
+    if draft.buyer_email:
+        story.append(kv("EMAIL ПОКУП.", draft.buyer_email))
+    if draft.buyer_phone:
+        story.append(kv("ТЕЛ. ПОКУП.", draft.buyer_phone))
+    story.append(kv("ПОКУПАТЕЛЬ", "ЮРЛИЦО / ИП" if draft.buyer_type == "LEGAL_ENTITY" else "ФИЗЛИЦО"))
+    if draft.buyer_type == "LEGAL_ENTITY":
+        if draft.buyer_legal_name:
+            story.append(kv("НАИМ. ПОКУП.", draft.buyer_legal_name))
+        if draft.buyer_inn:
+            story.append(kv("ИНН ПОКУП.", draft.buyer_inn))
+
+    story.append(line())
+
+    for i, pos in enumerate(draft.positions, start=1):
+        story.append(p(f"{i}. {pos.name}", bold))
+        story.append(kv("ПРЕДМЕТ", item_type_ru(pos.item_type)))
+        story.append(kv("КОЛ-ВО", f"{pos.quantity} x {format_money(pos.price_kopecks)}"))
+        story.append(kv("СУММА", format_money(pos.price_sum_kopecks)))
+        story.append(kv("НДС", tax_ru(pos.tax)))
+        if i != len(draft.positions):
+            story.append(Spacer(1, 1.5))
+
+    story.append(line())
+
+    # Итоги
+    story.append(kv("ИТОГ", format_money(amount)))
+    story.append(kv(payment_type_ru(draft.payment_type), format_money(amount)))
+
+    # НДС-итоги по ставкам
+    vat_groups: dict[str, int] = {}
+    for pos in draft.positions:
+        vat_groups[tax_ru(pos.tax)] = vat_groups.get(tax_ru(pos.tax), 0) + int(pos.price_sum_kopecks)
+    for tax_name, tax_base in vat_groups.items():
+        if tax_name == "БЕЗ НДС":
+            story.append(kv("ИТОГ БЕЗ НДС", format_money(tax_base)))
+        else:
+            story.append(kv(tax_name, format_money(tax_base)))
+
+    story.append(line())
+
+    if registry_number:
+        story.append(kv("РН ККТ", registry_number))
+    if kkt_number:
+        story.append(kv("ЗН ККТ", kkt_number))
+    if fn:
+        story.append(kv("ФН", fn))
+    if fd:
+        story.append(kv("ФД", fd))
+    if fp:
+        story.append(kv("ФП", fp))
+
+    story.append(kv("RECEIPT ID", receipt_id))
+    story.append(kv("OPERATION ID", operation.get("id", "-")))
+    story.append(kv("EXTERNAL ID", draft.external_id))
+
     if draft.parent_external_id:
-        story.append(Paragraph(f"Исходный чек: {draft.parent_external_id}", base))
-    story.append(Spacer(1, 6))
+        story.append(kv("ИСХ. EXTERNAL", draft.parent_external_id))
+    if draft.parent_receipt_id:
+        story.append(kv("ИСХ. RECEIPT", draft.parent_receipt_id))
+    if draft.refund_mode:
+        story.append(kv("РЕЖИМ ВОЗВР.", draft.refund_mode))
 
-    meta_rows = [
-        ["Тип чека", str(receipt.get("type", draft.payload.get("type", "-")))],
-        ["Сумма", format_money(int(receipt.get("amount", draft.total_kopecks)))],
-        ["Тип оплаты", draft.payment_type],
-        ["Email", draft.buyer_email or "-"],
-        ["Телефон", draft.buyer_phone or "-"],
-        ["СНО", draft.tax_mode],
-        ["Кассир", draft.cashier_name],
-    ]
-    table = Table(meta_rows, colWidths=[45*mm, 120*mm])
-    table.setStyle(TableStyle([
-        ("FONT", (0, 0), (-1, -1), font_name, 9),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-        ("BACKGROUND", (0, 0), (0, -1), colors.whitesmoke),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-    ]))
-    story.append(table)
-
-    story.append(Paragraph("Позиции", h2))
-    pos_rows = [["№", "Наименование", "Тип", "Кол-во", "Цена", "Сумма", "НДС"]]
-    for i, p in enumerate(draft.positions, start=1):
-        pos_rows.append([
-            str(i), p.name, p.item_type, str(p.quantity), format_money(p.price_kopecks), format_money(p.price_sum_kopecks), p.tax
-        ])
-    pos_table = Table(pos_rows, colWidths=[8*mm, 62*mm, 23*mm, 18*mm, 24*mm, 24*mm, 24*mm], repeatRows=1)
-    pos_table.setStyle(TableStyle([
-        ("FONT", (0, 0), (-1, -1), font_name, 8),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("ALIGN", (0, 1), (0, -1), "CENTER"),
-        ("ALIGN", (3, 1), (-1, -1), "RIGHT"),
-    ]))
-    story.append(pos_table)
-
-    story.append(Paragraph("Фискальные реквизиты", h2))
-    fiscal_rows = [
-        ["ФН", str(receipt.get("fnNumber", "-"))],
-        ["ФД", str(receipt.get("fiscalDocumentNumber", "-"))],
-        ["ФП", str(receipt.get("fiscalDocumentSign", "-"))],
-        ["РН ККТ", str(receipt.get("registryNumber", "-"))],
-        ["Ссылка", str(receipt.get("checkURL", "-"))],
-    ]
-    fiscal_table = Table(fiscal_rows, colWidths=[35*mm, 130*mm])
-    fiscal_table.setStyle(TableStyle([
-        ("FONT", (0, 0), (-1, -1), font_name, 8),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-        ("BACKGROUND", (0, 0), (0, -1), colors.whitesmoke),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-    ]))
-    story.append(fiscal_table)
+    if check_url:
+        story.append(line())
+        story.append(p("АДРЕС ПРОВЕРКИ ЧЕКА", center))
+        story.append(p(check_url, small))
 
     if qr_path and qr_path.exists():
-        story.append(Spacer(1, 8))
-        story.append(Paragraph("QR-код проверки", h2))
-        story.append(Image(str(qr_path), width=42*mm, height=42*mm))
+        story.append(line())
+        story.append(p("QR-КОД ДЛЯ ПРОВЕРКИ", center))
+        # Минимум по современным требованиям — 20x20 мм, поэтому используем 25x25 мм.
+        img = Image(str(qr_path), width=25 * mm, height=25 * mm)
+        img.hAlign = "CENTER"
+        story.append(img)
+
     if qr_data:
-        story.append(Paragraph(f"QR data: {qr_data}", base))
+        story.append(Spacer(1, 2))
+        story.append(p(qr_data, small))
+
+    story.append(line())
+    story.append(p("СПАСИБО ЗА ПОКУПКУ!", center))
+    story.append(p("Электронная копия сформирована Dreamkas Receipt Tool", center))
 
     doc.build(story)
+
 
 
 def send_receipt_email(
@@ -2059,6 +3109,22 @@ def first_payment_type(payload: dict[str, Any]) -> str:
     return "CASHLESS"
 
 
+
+def legal_buyer_from_payload(payload: dict[str, Any]) -> tuple[str, Optional[str], Optional[str]]:
+    """Пробует извлечь данные юрлица из ФФД-тегов 1227/1228 в payload."""
+    legal_name: Optional[str] = None
+    buyer_inn: Optional[str] = None
+    tags = payload.get("tags")
+    if isinstance(tags, list):
+        for tag in tags:
+            if not isinstance(tag, dict):
+                continue
+            if tag.get("tag") == 1227:
+                legal_name = str(tag.get("value") or "").strip() or legal_name
+            elif tag.get("tag") == 1228:
+                buyer_inn = normalize_buyer_inn(tag.get("value")) or buyer_inn
+    return ("LEGAL_ENTITY" if legal_name or buyer_inn else "INDIVIDUAL", legal_name, buyer_inn)
+
 def buyer_from_payload(payload: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
     attributes = payload.get("attributes") or {}
     if not isinstance(attributes, dict):
@@ -2198,6 +3264,10 @@ def settings_menu(settings_path: Path, settings: dict[str, str], session: reques
         print("  5. Настроить SMTP для отправки email")
         print("  6. Включить/выключить PDF")
         print("  7. Включить/выключить очистку Excel после успешного чека")
+        print("  8. Настроить поиск юрлица / ИП по ИНН")
+        print("  9. Выбрать способ безналичной оплаты")
+        print(" 10. Настроить СБП через T-Банк")
+        print(" 11. Настроить СБП B2B/I2I через T-Банк")
         print("  0. Назад")
         answer = input("Выберите пункт: ").strip()
         if answer in {"0", "", "q", "й"}:
@@ -2207,7 +3277,10 @@ def settings_menu(settings_path: Path, settings: dict[str, str], session: reques
             settings["DREAMKAS_TOKEN"] = ask_token_from_user()
             session.headers.update(dreamkas_headers(settings["DREAMKAS_TOKEN"]))
             settings = clear_smtp_settings(settings_path, settings, "DREAMKAS_TOKEN изменен пользователем")
-            print("Токен обновлен. SMTP-настройки очищены, потому что ключ шифрования изменился.")
+            settings["TBANK_PASSWORD_ENC"] = ""
+            settings["TBANK_B2B_API_TOKEN_ENC"] = ""
+            save_settings(settings_path, settings)
+            print("Токен обновлен. SMTP-пароль, пароль T-Банка и T-API token очищены, потому что ключ шифрования изменился.")
             continue
         if answer == "2":
             settings = select_shop_and_device(settings_path, settings, session, api_base_url, request_timeout)
@@ -2251,6 +3324,115 @@ def settings_menu(settings_path: Path, settings: dict[str, str], session: reques
             settings["CLEAR_EXCEL_AFTER_SUCCESS"] = "0" if bool_setting(settings, "CLEAR_EXCEL_AFTER_SUCCESS", True) else "1"
             save_settings(settings_path, settings)
             print(f"CLEAR_EXCEL_AFTER_SUCCESS = {settings['CLEAR_EXCEL_AFTER_SUCCESS']}")
+            continue
+        if answer == "8":
+            print("\nПоиск названия юрлица / ИП по ИНН")
+            settings["LEGAL_ENTITY_LOOKUP_ENABLED"] = input(
+                f"Включить поиск по ИНН? 1/0 [{settings.get('LEGAL_ENTITY_LOOKUP_ENABLED','1')}]: "
+            ).strip() or settings.get("LEGAL_ENTITY_LOOKUP_ENABLED", "1")
+            settings["LEGAL_ENTITY_LOOKUP_PROVIDER"] = input(
+                f"Провайдер [DADATA] [{settings.get('LEGAL_ENTITY_LOOKUP_PROVIDER','DADATA')}]: "
+            ).strip() or settings.get("LEGAL_ENTITY_LOOKUP_PROVIDER", "DADATA")
+            print("Для DaData нужен API token из личного кабинета DaData.")
+            if input("Изменить DADATA_TOKEN? 1/0: ").strip() == "1":
+                try:
+                    token = getpass.getpass("DADATA_TOKEN: ").strip()
+                except Exception:
+                    token = input("DADATA_TOKEN: ").strip()
+                if token:
+                    settings["DADATA_TOKEN"] = token
+            settings["DADATA_BRANCH_TYPE"] = input(
+                f"DADATA_BRANCH_TYPE MAIN/BRANCH [{settings.get('DADATA_BRANCH_TYPE','MAIN')}]: "
+            ).strip() or settings.get("DADATA_BRANCH_TYPE", "MAIN")
+            settings["DADATA_UPDATE_EXCEL_NAME"] = input(
+                f"Записывать найденное название обратно в Excel? 1/0 [{settings.get('DADATA_UPDATE_EXCEL_NAME','1')}]: "
+            ).strip() or settings.get("DADATA_UPDATE_EXCEL_NAME", "1")
+            save_settings(settings_path, settings)
+            continue
+        if answer == "9":
+            print("\nСпособ безналичной оплаты")
+            print("  1. Внешний банковский терминал")
+            print("  2. T-Банк СБП")
+            current_provider = normalize_cashless_payment_provider(settings.get("CASHLESS_PAYMENT_PROVIDER", "EXTERNAL_TERMINAL"))
+            print(f"Текущий способ: {cashless_provider_label(current_provider)}")
+            provider_answer = input("Выберите способ [1/2]: ").strip()
+            if provider_answer == "1":
+                settings["CASHLESS_PAYMENT_PROVIDER"] = "EXTERNAL_TERMINAL"
+                settings["TBANK_SBP_ENABLED"] = "0"
+            elif provider_answer == "2":
+                settings["CASHLESS_PAYMENT_PROVIDER"] = "TBANK_SBP"
+                settings["TBANK_SBP_ENABLED"] = "1"
+            else:
+                print("Способ не изменён.")
+            save_settings(settings_path, settings)
+            print(f"CASHLESS_PAYMENT_PROVIDER = {settings.get('CASHLESS_PAYMENT_PROVIDER')}")
+            continue
+        if answer == "10":
+            print("\nНастройка СБП через T-Банк")
+            settings["TBANK_SBP_ENABLED"] = input(
+                f"Включить оплату СБП через T-Банк? 1/0 [{settings.get('TBANK_SBP_ENABLED','0')}]: "
+            ).strip() or settings.get("TBANK_SBP_ENABLED", "0")
+            settings["TBANK_TERMINAL_KEY"] = input(
+                f"TBANK_TERMINAL_KEY [{settings.get('TBANK_TERMINAL_KEY','')}]: "
+            ).strip() or settings.get("TBANK_TERMINAL_KEY", "")
+            if input("Изменить TBANK_PASSWORD? 1/0: ").strip() == "1":
+                password = getpass.getpass("TBANK_PASSWORD: ").strip()
+                if password:
+                    settings["TBANK_PASSWORD_ENC"] = encrypt_smtp_password(password, settings.get("DREAMKAS_TOKEN", ""))
+                    settings.pop("TBANK_PASSWORD", None)
+                    print("Пароль T-Банка зашифрован и сохранен как TBANK_PASSWORD_ENC.")
+            settings["TBANK_PAY_TYPE"] = input(
+                f"TBANK_PAY_TYPE O/T [{settings.get('TBANK_PAY_TYPE','O')}]: "
+            ).strip() or settings.get("TBANK_PAY_TYPE", "O")
+            settings["TBANK_PAYMENT_TIMEOUT_MINUTES"] = input(
+                f"TBANK_PAYMENT_TIMEOUT_MINUTES [{settings.get('TBANK_PAYMENT_TIMEOUT_MINUTES','10')}]: "
+            ).strip() or settings.get("TBANK_PAYMENT_TIMEOUT_MINUTES", "10")
+            settings["TBANK_POLL_INTERVAL_SECONDS"] = input(
+                f"TBANK_POLL_INTERVAL_SECONDS [{settings.get('TBANK_POLL_INTERVAL_SECONDS','5')}]: "
+            ).strip() or settings.get("TBANK_POLL_INTERVAL_SECONDS", "5")
+            settings["TBANK_REQUEST_TIMEOUT_SECONDS"] = input(
+                f"TBANK_REQUEST_TIMEOUT_SECONDS [{settings.get('TBANK_REQUEST_TIMEOUT_SECONDS','30')}]: "
+            ).strip() or settings.get("TBANK_REQUEST_TIMEOUT_SECONDS", "30")
+            settings["TBANK_QR_DATA_TYPE"] = input(
+                f"TBANK_QR_DATA_TYPE PAYLOAD/IMAGE [{settings.get('TBANK_QR_DATA_TYPE','PAYLOAD')}]: "
+            ).strip() or settings.get("TBANK_QR_DATA_TYPE", "PAYLOAD")
+            settings["TBANK_DESCRIPTION_PREFIX"] = input(
+                f"TBANK_DESCRIPTION_PREFIX [{settings.get('TBANK_DESCRIPTION_PREFIX','Оплата заказа')}]: "
+            ).strip() or settings.get("TBANK_DESCRIPTION_PREFIX", "Оплата заказа")
+
+            if bool_setting(settings, "TBANK_SBP_ENABLED", False):
+                settings["CASHLESS_PAYMENT_PROVIDER"] = "TBANK_SBP"
+
+            save_settings(settings_path, settings)
+            continue
+        if answer == "11":
+            print("\nНастройка СБП B2B/I2I через T-Банк T-API")
+            print("Этот режим используется для оплаты от юрлиц и ИП.")
+            settings["TBANK_B2B_SBP_ENABLED"] = input(
+                f"Включить СБП B2B/I2I? 1/0 [{settings.get('TBANK_B2B_SBP_ENABLED','0')}]: "
+            ).strip() or settings.get("TBANK_B2B_SBP_ENABLED", "0")
+            settings["TBANK_B2B_ACCOUNT_NUMBER"] = input(
+                f"TBANK_B2B_ACCOUNT_NUMBER, расчетный счет 20/22 цифры [{settings.get('TBANK_B2B_ACCOUNT_NUMBER','')}]: "
+            ).strip() or settings.get("TBANK_B2B_ACCOUNT_NUMBER", "")
+            if input("Изменить TBANK_B2B_API_TOKEN? 1/0: ").strip() == "1":
+                token = getpass.getpass("TBANK_B2B_API_TOKEN: ").strip()
+                if token:
+                    settings["TBANK_B2B_API_TOKEN_ENC"] = encrypt_smtp_password(token, settings.get("DREAMKAS_TOKEN", ""))
+                    settings.pop("TBANK_B2B_API_TOKEN", None)
+                    print("T-API token зашифрован и сохранен как TBANK_B2B_API_TOKEN_ENC.")
+            settings["TBANK_B2B_TTL_DAYS"] = input(
+                f"TBANK_B2B_TTL_DAYS [{settings.get('TBANK_B2B_TTL_DAYS','1')}]: "
+            ).strip() or settings.get("TBANK_B2B_TTL_DAYS", "1")
+            settings["TBANK_B2B_VAT"] = input(
+                f"TBANK_B2B_VAT 0/5/7/10/20/22 [{settings.get('TBANK_B2B_VAT','0')}]: "
+            ).strip() or settings.get("TBANK_B2B_VAT", "0")
+            settings["TBANK_B2B_REDIRECT_URL"] = input(
+                f"TBANK_B2B_REDIRECT_URL [{settings.get('TBANK_B2B_REDIRECT_URL','')}]: "
+            ).strip() or settings.get("TBANK_B2B_REDIRECT_URL", "")
+            settings["TBANK_B2B_PURPOSE_PREFIX"] = input(
+                f"TBANK_B2B_PURPOSE_PREFIX [{settings.get('TBANK_B2B_PURPOSE_PREFIX','Оплата по счету')}]: "
+            ).strip() or settings.get("TBANK_B2B_PURPOSE_PREFIX", "Оплата по счету")
+            save_settings(settings_path, settings)
             continue
         print("Некорректный выбор.")
 
@@ -2433,6 +3615,7 @@ def build_refund_draft_from_row(
     settings: dict[str, str],
     selected_indices: list[int],
     refund_mode: str,
+    cashier_override: Optional[str] = None,
 ) -> ReceiptDraft:
     original_payload = load_json_object(row["request_json"])
     original_positions = payload_positions(original_payload)
@@ -2449,6 +3632,17 @@ def build_refund_draft_from_row(
     if not buyer_email and not buyer_phone:
         buyer_email, buyer_phone = buyer_from_payload(original_payload)
 
+    precheck = load_json_object(row["precheck_json"] if "precheck_json" in row.keys() else None)
+    buyer_type = str(precheck.get("buyer_type") or "") if isinstance(precheck, dict) else ""
+    buyer_legal_name = str(precheck.get("buyer_legal_name") or "").strip() if isinstance(precheck, dict) else ""
+    buyer_inn = normalize_buyer_inn(precheck.get("buyer_inn")) if isinstance(precheck, dict) else None
+    if not buyer_type or buyer_type == "None":
+        buyer_type, tag_legal_name, tag_buyer_inn = legal_buyer_from_payload(original_payload)
+        buyer_legal_name = buyer_legal_name or (tag_legal_name or "")
+        buyer_inn = buyer_inn or tag_buyer_inn
+    if not buyer_legal_name:
+        buyer_legal_name = None
+
     attributes: dict[str, str] = {}
     if buyer_email:
         attributes["email"] = str(buyer_email)
@@ -2461,7 +3655,7 @@ def build_refund_draft_from_row(
 
     payment_type = row["payment_type"] or first_payment_type(original_payload)
     tax_mode = row["tax_mode"] or str(original_payload.get("taxMode") or "DEFAULT")
-    cashier_name = row["cashier_name"] or "Не указан"
+    cashier_name = cashier_override or row["cashier_name"] or "Не указан"
     timeout_minutes = max(5, get_int(settings, "TIMEOUT_MINUTES", 5))
     device_id = int(get_required(settings, "DEVICE_ID"))
     shop_id = int(get_required(settings, "SHOP_ID"))
@@ -2478,6 +3672,9 @@ def build_refund_draft_from_row(
     payload["payments"] = [{"sum": total_kopecks, "type": payment_type}]
     payload["attributes"] = attributes
     payload["total"] = {"priceSum": total_kopecks}
+    legal_entity_tags = build_legal_entity_ffd_tags(str(buyer_type), buyer_legal_name, buyer_inn, settings)
+    if legal_entity_tags and not payload.get("tags"):
+        payload["tags"] = legal_entity_tags
 
     cashier_payload = build_cashier_payload(cashier_name)
     if cashier_payload:
@@ -2492,6 +3689,9 @@ def build_refund_draft_from_row(
         payment_type=str(payment_type),
         buyer_email=str(buyer_email) if buyer_email else None,
         buyer_phone=str(buyer_phone) if buyer_phone else None,
+        buyer_type=str(buyer_type or "INDIVIDUAL"),
+        buyer_legal_name=str(buyer_legal_name) if buyer_legal_name else None,
+        buyer_inn=str(buyer_inn) if buyer_inn else None,
         tax_mode=str(tax_mode),
         cashier_name=str(cashier_name),
         positions=positions,
@@ -2504,7 +3704,7 @@ def build_refund_draft_from_row(
     )
 
 
-def build_refund_draft_interactive(conn: sqlite3.Connection, settings: dict[str, str]) -> Optional[ReceiptDraft]:
+def build_refund_draft_interactive(conn: sqlite3.Connection, settings: dict[str, str], cashier_name: Optional[str] = None) -> Optional[ReceiptDraft]:
     row = choose_receipt_for_refund(conn)
     if row is None:
         return None
@@ -2526,7 +3726,7 @@ def build_refund_draft_interactive(conn: sqlite3.Connection, settings: dict[str,
             print_saved_receipt_details(row, selected_indices)
             answer = input("Возвращаем весь чек? Введите ДА для подтверждения: ").strip().lower()
             if answer in {"да", "д", "yes", "y"}:
-                return build_refund_draft_from_row(row, settings, selected_indices, "full")
+                return build_refund_draft_from_row(row, settings, selected_indices, "full", cashier_name)
             print("Возврат всего чека не подтвержден. Возвращаюсь к выбору варианта.")
             continue
 
@@ -2534,7 +3734,706 @@ def build_refund_draft_interactive(conn: sqlite3.Connection, settings: dict[str,
             selected_indices = choose_partial_positions(row, len(positions))
             if selected_indices is None:
                 continue
-            return build_refund_draft_from_row(row, settings, selected_indices, "partial")
+            return build_refund_draft_from_row(row, settings, selected_indices, "partial", cashier_name)
+
+
+
+def build_tbank_token(payload: dict[str, Any], password: str) -> str:
+    """
+    Формирует Token T-Банка.
+
+    В токен входят только параметры корневого объекта.
+    Вложенные объекты и массивы не участвуют.
+    """
+    root: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key == "Token":
+            continue
+        if isinstance(value, (dict, list)):
+            continue
+        if value is None:
+            continue
+        root[key] = value
+    root["Password"] = password
+    concatenated = "".join(str(root[key]) for key in sorted(root))
+    return hashlib.sha256(concatenated.encode("utf-8")).hexdigest()
+
+
+def get_tbank_password(settings_path: Path, settings: dict[str, str], *, ask_if_missing: bool = True) -> str:
+    """
+    Возвращает пароль терминала T-Банка.
+
+    Хранится как TBANK_PASSWORD_ENC, шифруется тем же переносимым механизмом,
+    что и SMTP_PASSWORD_ENC: ключом от DREAMKAS_TOKEN.
+    """
+    token = settings.get("DREAMKAS_TOKEN", "").strip()
+    encrypted = settings.get("TBANK_PASSWORD_ENC", "").strip()
+    if encrypted:
+        return decrypt_smtp_password(encrypted, token)
+
+    plain_legacy = settings.get("TBANK_PASSWORD", "").strip()
+    if plain_legacy:
+        settings["TBANK_PASSWORD_ENC"] = encrypt_smtp_password(plain_legacy, token)
+        settings.pop("TBANK_PASSWORD", None)
+        save_settings(settings_path, settings)
+        print("TBANK_PASSWORD найден в открытом виде, зашифрован и перенесен в TBANK_PASSWORD_ENC.")
+        return plain_legacy
+
+    if not ask_if_missing:
+        return ""
+
+    print("\nПароль терминала T-Банка не найден.")
+    print("Введите пароль терминала один раз — он будет сохранен в settings.txt в зашифрованном виде.")
+    password = getpass.getpass("TBANK_PASSWORD: ").strip()
+    if password:
+        settings["TBANK_PASSWORD_ENC"] = encrypt_smtp_password(password, token)
+        settings.pop("TBANK_PASSWORD", None)
+        save_settings(settings_path, settings)
+        print("Пароль T-Банка зашифрован и сохранен как TBANK_PASSWORD_ENC.")
+        return password
+    return ""
+
+
+
+def get_tbank_b2b_api_token(settings_path: Path, settings: dict[str, str], ask_if_missing: bool = True) -> str:
+    """
+    Возвращает Bearer token T-API для B2B/I2I СБП.
+
+    Это отдельный токен T-API, не TerminalKey и не пароль интернет-эквайринга.
+    """
+    token_key = settings.get("DREAMKAS_TOKEN", "").strip()
+    encrypted = settings.get("TBANK_B2B_API_TOKEN_ENC", "").strip()
+    if encrypted:
+        return decrypt_smtp_password(encrypted, token_key)
+
+    plain_legacy = settings.get("TBANK_B2B_API_TOKEN", "").strip()
+    if plain_legacy:
+        settings["TBANK_B2B_API_TOKEN_ENC"] = encrypt_smtp_password(plain_legacy, token_key)
+        settings.pop("TBANK_B2B_API_TOKEN", None)
+        save_settings(settings_path, settings)
+        print("TBANK_B2B_API_TOKEN найден в открытом виде, зашифрован и перенесен в TBANK_B2B_API_TOKEN_ENC.")
+        return plain_legacy
+
+    if not ask_if_missing:
+        return ""
+
+    print("\nДля СБП B2B/I2I нужен T-API Bearer token.")
+    print("Он отличается от TerminalKey/Password интернет-эквайринга.")
+    token = getpass.getpass("TBANK_B2B_API_TOKEN: ").strip()
+    if token:
+        settings["TBANK_B2B_API_TOKEN_ENC"] = encrypt_smtp_password(token, token_key)
+        settings.pop("TBANK_B2B_API_TOKEN", None)
+        save_settings(settings_path, settings)
+        print("T-API token зашифрован и сохранен как TBANK_B2B_API_TOKEN_ENC.")
+        return token
+    return ""
+
+
+def choose_sbp_mode_for_legal_buyer(settings: dict[str, str]) -> str:
+    """
+    Для юрлица/ИП при оплате через СБП спрашиваем:
+    - обычный QR интернет-эквайринга;
+    - СБП B2B/I2I через T-API.
+    """
+    print("\nПокупатель — юрлицо / ИП.")
+    print("Выберите формат оплаты по СБП:")
+    print("  1. Обычная СБП-оплата QR через интернет-эквайринг T-Банка")
+    print("  2. СБП B2B/I2I — ссылка/QR для оплаты юрлицом или ИП через T-API")
+    default = "2" if bool_setting(settings, "TBANK_B2B_SBP_ENABLED", False) else "1"
+
+    while True:
+        answer = input(f"Выберите вариант [1/2, Enter = {default}]: ").strip() or default
+        if answer == "1":
+            return "EACQ_SBP"
+        if answer == "2":
+            return "B2B_I2I"
+        print("Введите 1 для обычной СБП-оплаты или 2 для СБП B2B/I2I.")
+
+
+def normalize_b2b_vat(raw: str) -> str:
+    value = str(raw or "").strip().replace("%", "")
+    if value in {"0", "5", "7", "10", "20", "22"}:
+        return value
+    return "0"
+
+
+def b2b_amount_rubles(amount_kopecks: int) -> float:
+    """T-API B2B QR принимает сумму как число в рублях."""
+    return round(int(amount_kopecks) / 100.0, 2)
+
+
+def extract_b2b_qr_id(response: dict[str, Any]) -> Optional[str]:
+    for key in ("qrId", "id", "linkId", "paymentId", "paymentLinkId"):
+        value = response.get(key)
+        if value:
+            return str(value)
+    data = response.get("data")
+    if isinstance(data, dict):
+        for key in ("qrId", "id", "linkId", "paymentId", "paymentLinkId"):
+            value = data.get(key)
+            if value:
+                return str(value)
+    return None
+
+
+def extract_b2b_payment_link(response: dict[str, Any]) -> Optional[str]:
+    candidates = [
+        "payload", "Payload", "qrPayload", "qrUrl", "url", "link", "paymentUrl",
+        "paymentLink", "redirectUrl", "shortUrl", "deeplink", "Data", "data",
+    ]
+    for key in candidates:
+        value = response.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    data = response.get("data")
+    if isinstance(data, dict):
+        for key in candidates:
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def extract_b2b_status(response: dict[str, Any]) -> str:
+    for key in ("status", "Status", "state", "State", "paymentStatus", "PaymentStatus"):
+        value = response.get(key)
+        if value:
+            return str(value).upper()
+    data = response.get("data")
+    if isinstance(data, dict):
+        for key in ("status", "Status", "state", "State", "paymentStatus", "PaymentStatus"):
+            value = data.get(key)
+            if value:
+                return str(value).upper()
+    return "UNKNOWN"
+
+
+
+def tbank_request(endpoint: str, payload: dict[str, Any], settings: dict[str, str], settings_path: Path) -> dict[str, Any]:
+    terminal_key = settings.get("TBANK_TERMINAL_KEY", "").strip()
+    if not terminal_key:
+        raise DreamkasError("Для оплаты по СБП нужно настроить TBANK_TERMINAL_KEY.")
+
+    password = get_tbank_password(settings_path, settings, ask_if_missing=True)
+    if not password:
+        raise DreamkasError("Для оплаты по СБП нужен пароль терминала T-Банка.")
+
+    body = dict(payload)
+    body["TerminalKey"] = terminal_key
+    body["Token"] = build_tbank_token(body, password)
+
+    url = f"https://securepay.tinkoff.ru/v2/{endpoint}"
+    timeout_seconds = max(5, get_int(settings, "TBANK_REQUEST_TIMEOUT_SECONDS", 30))
+    log_json(f"REQUEST POST {url}", {k: ("***" if k == "Token" else v) for k, v in body.items()})
+
+    try:
+        response = requests.post(url, json=body, timeout=timeout_seconds)
+    except requests.RequestException as exc:
+        logging.exception("T-Bank network error for %s", endpoint)
+        raise DreamkasError(f"Сетевая ошибка T-Банка {endpoint}: {exc}") from exc
+
+    try:
+        data = response.json()
+    except Exception:
+        data = {"raw": response.text}
+
+    log_json(f"RESPONSE {response.status_code} POST {url}", data)
+    if response.status_code < 200 or response.status_code >= 300:
+        raise DreamkasError(f"T-Банк API вернул HTTP {response.status_code}: {data}")
+    if isinstance(data, dict) and data.get("Success") is False:
+        msg = data.get("Message") or data.get("Details") or data.get("ErrorCode") or data
+        raise DreamkasError(f"T-Банк API вернул ошибку: {msg}")
+    if not isinstance(data, dict):
+        raise DreamkasError("T-Банк API вернул неожиданный ответ")
+    return data
+
+
+def create_tbank_sbp_payment(draft: ReceiptDraft, settings: dict[str, str], settings_path: Path) -> dict[str, Any]:
+    description_prefix = settings.get("TBANK_DESCRIPTION_PREFIX", "Оплата заказа").strip() or "Оплата заказа"
+    description = f"{description_prefix} {draft.external_id}"[:140]
+    due_minutes = max(1, get_int(settings, "TBANK_PAYMENT_TIMEOUT_MINUTES", 10))
+    due_date = (datetime.now() + timedelta(minutes=due_minutes)).astimezone().replace(microsecond=0).isoformat()
+    payload = {
+        "Amount": draft.total_kopecks,
+        "OrderId": draft.external_id,
+        "Description": description,
+        "PayType": settings.get("TBANK_PAY_TYPE", "O").strip().upper() or "O",
+        "RedirectDueDate": due_date,
+    }
+    return tbank_request("Init", payload, settings, settings_path)
+
+
+def get_tbank_qr(payment_id: str, settings: dict[str, str], settings_path: Path) -> dict[str, Any]:
+    payload = {
+        "PaymentId": str(payment_id),
+        "DataType": settings.get("TBANK_QR_DATA_TYPE", "PAYLOAD").strip().upper() or "PAYLOAD",
+    }
+    return tbank_request("GetQr", payload, settings, settings_path)
+
+
+def get_tbank_state(payment_id: str, settings: dict[str, str], settings_path: Path) -> dict[str, Any]:
+    return tbank_request("GetState", {"PaymentId": str(payment_id)}, settings, settings_path)
+
+
+
+def tbank_b2b_request(
+    method: str,
+    path: str,
+    *,
+    settings: dict[str, str],
+    settings_path: Path,
+    json_body: Optional[dict[str, Any]] = None,
+    query: str = "",
+) -> dict[str, Any]:
+    """
+    Запрос к T-API для СБП B2B/I2I.
+    """
+    token = get_tbank_b2b_api_token(settings_path, settings, ask_if_missing=True)
+    if not token:
+        raise DreamkasError("Для СБП B2B/I2I нужен TBANK_B2B_API_TOKEN.")
+
+    base_url = "https://business.tbank.ru/openapi"
+    url = base_url + path + query
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "X-Request-Id": str(uuid.uuid4()),
+    }
+    timeout_seconds = max(5, get_int(settings, "TBANK_REQUEST_TIMEOUT_SECONDS", 30))
+
+    log_json(f"REQUEST {method} {url}", json_body or {})
+    try:
+        response = requests.request(method, url, headers=headers, json=json_body, timeout=timeout_seconds)
+    except requests.RequestException as exc:
+        logging.exception("T-Bank B2B network error for %s %s", method, url)
+        raise DreamkasError(f"Сетевая ошибка T-Банк B2B/I2I: {exc}") from exc
+
+    body = parse_api_response(response)
+    log_json(f"RESPONSE {response.status_code} {method} {url}", body)
+    if response.status_code < 200 or response.status_code >= 300:
+        raise DreamkasError(f"T-Банк B2B/I2I API вернул HTTP {response.status_code}: {body}")
+
+    if isinstance(body, dict):
+        return body
+    return {"raw": body}
+
+
+def create_tbank_b2b_sbp_link(draft: ReceiptDraft, settings: dict[str, str], settings_path: Path) -> dict[str, Any]:
+    account_number = re.sub(r"\D", "", settings.get("TBANK_B2B_ACCOUNT_NUMBER", ""))
+    if not re.fullmatch(r"(\d{20}|\d{22})", account_number or ""):
+        raise DreamkasError("Для СБП B2B/I2I нужно указать TBANK_B2B_ACCOUNT_NUMBER — расчетный счет 20 или 22 цифры.")
+
+    ttl_days = max(1, get_int(settings, "TBANK_B2B_TTL_DAYS", 1))
+    purpose_prefix = settings.get("TBANK_B2B_PURPOSE_PREFIX", "Оплата по счету").strip() or "Оплата по счету"
+    purpose_parts = [purpose_prefix, draft.external_id]
+    if draft.buyer_legal_name:
+        purpose_parts.append(str(draft.buyer_legal_name))
+    purpose = " ".join(purpose_parts)[:210]
+
+    payload: dict[str, Any] = {
+        "accountNumber": account_number,
+        "sum": b2b_amount_rubles(draft.total_kopecks),
+        "purpose": purpose,
+        "ttl": ttl_days,
+        "vat": normalize_b2b_vat(settings.get("TBANK_B2B_VAT", "0")),
+    }
+
+    redirect_url = settings.get("TBANK_B2B_REDIRECT_URL", "").strip()
+    if redirect_url:
+        payload["redirectUrl"] = redirect_url
+
+    return tbank_b2b_request(
+        "POST",
+        "/api/v1/b2b/qr/onetime",
+        settings=settings,
+        settings_path=settings_path,
+        json_body=payload,
+    )
+
+
+def get_tbank_b2b_sbp_info(qr_id: str, settings: dict[str, str], settings_path: Path, with_image: bool = False) -> dict[str, Any]:
+    query = "?withImage=true" if with_image else ""
+    return tbank_b2b_request(
+        "GET",
+        f"/api/v1/b2b/qr/{qr_id}/info",
+        settings=settings,
+        settings_path=settings_path,
+        query=query,
+    )
+
+
+def run_tbank_b2b_sbp_payment(
+    *,
+    conn: sqlite3.Connection,
+    draft: ReceiptDraft,
+    settings: dict[str, str],
+    settings_path: Path,
+    paths: dict[str, Path],
+) -> SbpPaymentResult:
+    """
+    Создает B2B/I2I СБП-ссылку/QR через T-API и ждёт оплату.
+    """
+    if not bool_setting(settings, "TBANK_B2B_SBP_ENABLED", False):
+        raise DreamkasError("СБП B2B/I2I выбрано, но TBANK_B2B_SBP_ENABLED = 0. Включите его в настройках.")
+
+    print("\nСоздаю СБП B2B/I2I ссылку в T-Банке...")
+    create_response = create_tbank_b2b_sbp_link(draft, settings, settings_path)
+    qr_id = extract_b2b_qr_id(create_response) or draft.external_id
+    qr_payload = extract_b2b_payment_link(create_response)
+
+    info_response: dict[str, Any] = create_response
+    if not qr_payload and qr_id:
+        try:
+            info_response = get_tbank_b2b_sbp_info(str(qr_id), settings, settings_path, with_image=True)
+            qr_payload = extract_b2b_payment_link(info_response)
+        except Exception:
+            logging.exception("Could not fetch B2B QR info immediately")
+
+    if not qr_payload:
+        raise DreamkasError(f"T-Банк B2B/I2I не вернул ссылку/QR payload: {create_response}")
+
+    sbp_qr_name = f"SBP-B2B({datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}).png"
+    sbp_qr_path = paths["receipts_qr"] / sbp_qr_name
+    save_qr(qr_payload, sbp_qr_path)
+    print(f"QR СБП B2B/I2I сохранен: {sbp_qr_path}")
+    print_terminal_qr(qr_payload)
+
+    db_update(
+        conn,
+        draft.external_id,
+        sbp_payment_id=str(qr_id),
+        sbp_order_id=draft.external_id,
+        sbp_status=extract_b2b_status(create_response),
+        sbp_qr_payload=qr_payload,
+        sbp_qr_path=str(sbp_qr_path),
+        sbp_json=json.dumps({"b2b_create": create_response, "b2b_info": info_response}, ensure_ascii=False, indent=2),
+    )
+
+    print("\nОжидаю оплату СБП B2B/I2I...")
+    print("После успешной оплаты чек будет отправлен в Dreamkas автоматически.")
+    print_cancel_hint()
+
+    poll_interval = max(3, get_int(settings, "TBANK_POLL_INTERVAL_SECONDS", 5))
+    timeout_minutes = max(1, get_int(settings, "TBANK_PAYMENT_TIMEOUT_MINUTES", 10))
+    deadline = datetime.now() + timedelta(minutes=timeout_minutes)
+
+    success_statuses = {"PAID", "CONFIRMED", "SUCCESS", "SUCCEEDED", "PAYED", "COMPLETED", "EXECUTED"}
+    failure_statuses = {"CANCELED", "CANCELLED", "REJECTED", "EXPIRED", "DEADLINE_EXPIRED", "FAILED", "ERROR"}
+
+    status = extract_b2b_status(info_response)
+    last_info = info_response
+
+    while datetime.now() < deadline:
+        raise_if_operator_cancelled("ожидание оплаты СБП B2B/I2I")
+        if qr_id:
+            last_info = get_tbank_b2b_sbp_info(str(qr_id), settings, settings_path, with_image=False)
+            status = extract_b2b_status(last_info)
+        db_update(
+            conn,
+            draft.external_id,
+            sbp_status=f"B2B_{status}",
+            sbp_json=json.dumps({"b2b_create": create_response, "b2b_info": last_info}, ensure_ascii=False, indent=2),
+        )
+        if status in success_statuses:
+            finish_inline_status()
+            print(f"Оплата СБП B2B/I2I подтверждена. Статус: {status}")
+            return SbpPaymentResult(str(qr_id), draft.external_id, f"B2B_{status}", qr_payload, str(sbp_qr_path), create_response, {"b2b_qr": qr_payload}, last_info)
+        if status in failure_statuses:
+            finish_inline_status()
+            raise DreamkasError(f"Платеж СБП B2B/I2I завершился неуспешно. Статус: {status}")
+
+        print_inline_status(f"Статус оплаты B2B/I2I: {status or 'UNKNOWN'}. Следующая проверка через {poll_interval} сек.")
+        interruptible_sleep(poll_interval, "ожидание оплаты СБП B2B/I2I")
+
+    finish_inline_status()
+    raise DreamkasError(f"Истекло время ожидания оплаты СБП B2B/I2I ({timeout_minutes} мин). Чек в Dreamkas не отправлен.")
+
+
+
+def cancel_tbank_payment(payment_id: str, amount_kopecks: Optional[int], settings: dict[str, str], settings_path: Path) -> dict[str, Any]:
+    """
+    Отмена / возврат платежа в T-Банке через /v2/Cancel.
+
+    Для полного и частичного возврата передаем Amount в копейках.
+    Чеки формируются отдельно через Dreamkas, поэтому Receipt в T-Банк не передаем.
+    """
+    payload: dict[str, Any] = {"PaymentId": str(payment_id)}
+    if amount_kopecks is not None and int(amount_kopecks) > 0:
+        payload["Amount"] = int(amount_kopecks)
+    return tbank_request("Cancel", payload, settings, settings_path)
+
+
+def get_receipt_row_by_external_id(conn: sqlite3.Connection, external_id: Optional[str]) -> Optional[sqlite3.Row]:
+    if not external_id:
+        return None
+    return conn.execute(
+        "SELECT * FROM receipts WHERE external_id = ? LIMIT 1",
+        (str(external_id),),
+    ).fetchone()
+
+
+def maybe_offer_tbank_refund_after_fiscal_refund(
+    *,
+    conn: sqlite3.Connection,
+    draft: ReceiptDraft,
+    settings: dict[str, str],
+    settings_path: Path,
+) -> None:
+    """
+    После успешной фискализации чека возврата предлагает вернуть деньги через T-Банк,
+    если исходная продажа была оплачена через СБП и в SQLite сохранен sbp_payment_id.
+    """
+    if str(draft.payload.get("type") or "").upper() != "REFUND":
+        return
+
+    parent = get_receipt_row_by_external_id(conn, draft.parent_external_id)
+    if parent is None:
+        return
+
+    parent_payment_id = str(parent["sbp_payment_id"] or "").strip()
+    if not parent_payment_id:
+        return
+
+    parent_sbp_status = str(parent["sbp_status"] or "").strip()
+    print("\nИсходный чек был оплачен через Т-Банк СБП.")
+    print(f"PaymentId исходной оплаты: {parent_payment_id}")
+    if parent_sbp_status:
+        print(f"Статус исходной оплаты: {parent_sbp_status}")
+    print(f"Сумма возврата денег: {format_money(draft.total_kopecks)}")
+
+    answer = input("Отправить возврат денег через Т-Банк СБП? Введите ДА: ").strip().lower()
+    if answer not in {"да", "д", "yes", "y"}:
+        db_update(
+            conn,
+            draft.external_id,
+            sbp_status="TBANK_REFUND_SKIPPED",
+            sbp_json=json.dumps(
+                {
+                    "money_refund": "skipped_by_operator",
+                    "parent_sbp_payment_id": parent_payment_id,
+                    "amount_kopecks": draft.total_kopecks,
+                    "skipped_at": datetime.now().isoformat(timespec="seconds"),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+        print("Возврат денег через Т-Банк пропущен оператором.")
+        return
+
+    print("Отправляю запрос возврата денег в Т-Банк...")
+    try:
+        cancel_response = cancel_tbank_payment(parent_payment_id, draft.total_kopecks, settings, settings_path)
+        refund_status = str(cancel_response.get("Status") or cancel_response.get("Success") or "UNKNOWN")
+        db_update(
+            conn,
+            draft.external_id,
+            sbp_payment_id=parent_payment_id,
+            sbp_status=f"TBANK_REFUND_{refund_status}",
+            sbp_json=json.dumps(
+                {
+                    "money_refund": "sent",
+                    "parent_sbp_payment_id": parent_payment_id,
+                    "amount_kopecks": draft.total_kopecks,
+                    "cancel_response": cancel_response,
+                    "sent_at": datetime.now().isoformat(timespec="seconds"),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+        print(f"Запрос возврата денег отправлен в Т-Банк. Статус: {refund_status}")
+    except Exception as exc:
+        db_update(
+            conn,
+            draft.external_id,
+            sbp_payment_id=parent_payment_id,
+            sbp_status="TBANK_REFUND_ERROR",
+            sbp_json=json.dumps(
+                {
+                    "money_refund": "error",
+                    "parent_sbp_payment_id": parent_payment_id,
+                    "amount_kopecks": draft.total_kopecks,
+                    "error": str(exc),
+                    "failed_at": datetime.now().isoformat(timespec="seconds"),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+        print("\nВнимание: фискальный чек возврата уже создан, но возврат денег через Т-Банк не прошел.")
+        print(f"Ошибка Т-Банка: {exc}")
+        logging.exception("T-Bank money refund failed")
+
+
+
+def extract_tbank_qr_payload(qr_response: dict[str, Any]) -> Optional[str]:
+    for key in ("Data", "Payload", "QrCode", "QR", "Url"):
+        value = qr_response.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def print_terminal_qr(data: str) -> None:
+    qr = qrcode.QRCode(border=1)
+    qr.add_data(data)
+    qr.make(fit=True)
+    matrix = qr.get_matrix()
+    print("\nQR-код СБП для оплаты:")
+    print("(покупатель должен отсканировать его банковским приложением)")
+    for row in matrix:
+        print("".join("██" if cell else "  " for cell in row))
+
+
+def run_tbank_sbp_payment(
+    *,
+    conn: sqlite3.Connection,
+    draft: ReceiptDraft,
+    settings: dict[str, str],
+    settings_path: Path,
+    paths: dict[str, Path],
+) -> SbpPaymentResult:
+    """
+    Создаёт платеж СБП T-Банка, показывает QR в терминале,
+    сохраняет QR в PNG и ждёт успешной оплаты.
+    """
+    if draft.total_kopecks < 1000:
+        raise DreamkasError("Минимальная сумма операции по СБП в T-Банке — 10 рублей.")
+    if not bool_setting(settings, "TBANK_SBP_ENABLED", False):
+        raise DreamkasError("Оплата СБП выбрана, но TBANK_SBP_ENABLED = 0. Включите СБП в настройках.")
+
+    print("\nСоздаю платеж СБП в T-Банке...")
+    init_response = create_tbank_sbp_payment(draft, settings, settings_path)
+    payment_id = str(init_response.get("PaymentId") or "")
+    order_id = str(init_response.get("OrderId") or draft.external_id)
+    if not payment_id:
+        raise DreamkasError(f"T-Банк Init не вернул PaymentId: {init_response}")
+
+    db_update(conn, draft.external_id, sbp_payment_id=payment_id, sbp_order_id=order_id,
+              sbp_status=str(init_response.get("Status") or "INIT"),
+              sbp_json=json.dumps({"init": init_response}, ensure_ascii=False, indent=2))
+    print(f"Платеж создан. PaymentId: {payment_id}")
+
+    qr_response = get_tbank_qr(payment_id, settings, settings_path)
+    qr_payload = extract_tbank_qr_payload(qr_response)
+    if not qr_payload:
+        raise DreamkasError(f"T-Банк GetQr не вернул Payload/Data для QR: {qr_response}")
+
+    sbp_qr_name = f"SBP({datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}).png"
+    sbp_qr_path = paths["receipts_qr"] / sbp_qr_name
+    save_qr(qr_payload, sbp_qr_path)
+    print(f"QR СБП сохранен: {sbp_qr_path}")
+    print_terminal_qr(qr_payload)
+    db_update(conn, draft.external_id, sbp_qr_payload=qr_payload, sbp_qr_path=str(sbp_qr_path),
+              sbp_json=json.dumps({"init": init_response, "qr": qr_response}, ensure_ascii=False, indent=2))
+
+    print("\nОжидаю оплату СБП...")
+    print("После успешной оплаты чек будет отправлен в Dreamkas автоматически.")
+    print_cancel_hint()
+    poll_interval = max(3, get_int(settings, "TBANK_POLL_INTERVAL_SECONDS", 5))
+    timeout_minutes = max(1, get_int(settings, "TBANK_PAYMENT_TIMEOUT_MINUTES", 10))
+    deadline = datetime.now() + timedelta(minutes=timeout_minutes)
+
+    success_statuses = {"CONFIRMED", "AUTHORIZED"}
+    failure_statuses = {"REJECTED", "CANCELED", "CANCELLED", "DEADLINE_EXPIRED", "AUTH_FAIL"}
+    state_response: dict[str, Any] = init_response
+    status = str(init_response.get("Status") or "NEW").upper()
+
+    while datetime.now() < deadline:
+        raise_if_operator_cancelled("ожидание оплаты СБП")
+        state_response = get_tbank_state(payment_id, settings, settings_path)
+        status = str(state_response.get("Status") or "").upper()
+        db_update(conn, draft.external_id, sbp_status=status,
+                  sbp_json=json.dumps({"init": init_response, "qr": qr_response, "state": state_response}, ensure_ascii=False, indent=2))
+        if status in success_statuses:
+            finish_inline_status()
+            print(f"Оплата СБП подтверждена. Статус: {status}")
+            return SbpPaymentResult(payment_id, order_id, status, qr_payload, str(sbp_qr_path), init_response, qr_response, state_response)
+        if status in failure_statuses:
+            finish_inline_status()
+            raise DreamkasError(f"Платеж СБП завершился неуспешно. Статус: {status}")
+        print_inline_status(f"Статус оплаты: {status or 'UNKNOWN'}. Следующая проверка через {poll_interval} сек.")
+        interruptible_sleep(poll_interval, "ожидание оплаты СБП")
+
+    finish_inline_status()
+    raise DreamkasError(f"Истекло время ожидания оплаты СБП ({timeout_minutes} мин). Чек в Dreamkas не отправлен.")
+
+
+def confirm_external_terminal_payment(conn: sqlite3.Connection, draft: ReceiptDraft) -> bool:
+    """
+    Для безнала через внешний терминал программа не может проверить оплату сама.
+
+    Поэтому оператор должен вручную подтвердить, что платеж на внешнем терминале
+    успешно принят. Только после этого чек отправляется в Dreamkas.
+    """
+    if str(draft.payload.get("type") or "").upper() != "SALE":
+        return True
+    if draft.payment_type != "CASHLESS":
+        return True
+
+    print("\nПОДТВЕРЖДЕНИЕ ОПЛАТЫ ВНЕШНИМ ТЕРМИНАЛОМ")
+    print("-" * 72)
+    print(f"Сумма к оплате: {format_money(draft.total_kopecks)}")
+    print("Проведите оплату на внешнем банковском терминале.")
+    print("Чек в Dreamkas будет отправлен только после подтверждения оплаты оператором.")
+    print("-" * 72)
+
+    answer = input("Оплата на внешнем терминале успешно принята? Введите ДА: ").strip().lower()
+    if answer in {"да", "д", "yes", "y"}:
+        db_update(
+            conn,
+            draft.external_id,
+            sbp_status="EXTERNAL_TERMINAL_CONFIRMED",
+            sbp_json=json.dumps(
+                {
+                    "provider": "EXTERNAL_TERMINAL",
+                    "confirmed_at": datetime.now().isoformat(timespec="seconds"),
+                    "amount_kopecks": draft.total_kopecks,
+                    "operator_confirmation": True,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+        return True
+
+    db_update(
+        conn,
+        draft.external_id,
+        status="PAYMENT_NOT_CONFIRMED",
+        completed_at=datetime.now().isoformat(timespec="seconds"),
+        error_code="PAYMENT_NOT_CONFIRMED",
+        error_message="Оператор не подтвердил оплату на внешнем терминале",
+        sbp_status="EXTERNAL_TERMINAL_NOT_CONFIRMED",
+    )
+    return False
+
+
+def maybe_run_payment_before_fiscalization(
+    *,
+    conn: sqlite3.Connection,
+    draft: ReceiptDraft,
+    settings: dict[str, str],
+    settings_path: Path,
+    paths: dict[str, Path],
+) -> Optional[SbpPaymentResult]:
+    if str(draft.payload.get("type") or "").upper() != "SALE":
+        return None
+
+    if draft.payment_type == "SBP":
+        if draft.buyer_type == "LEGAL_ENTITY":
+            sbp_mode = choose_sbp_mode_for_legal_buyer(settings)
+            if sbp_mode == "B2B_I2I":
+                return run_tbank_b2b_sbp_payment(conn=conn, draft=draft, settings=settings, settings_path=settings_path, paths=paths)
+        return run_tbank_sbp_payment(conn=conn, draft=draft, settings=settings, settings_path=settings_path, paths=paths)
+
+    if draft.payment_type == "CASHLESS":
+        if not confirm_external_terminal_payment(conn, draft):
+            raise DreamkasError("Оплата на внешнем терминале не подтверждена. Чек в Dreamkas не отправлен.")
+
+    return None
 
 
 def submit_draft(
@@ -2580,6 +4479,47 @@ def submit_draft(
         draft.total_kopecks,
     )
 
+    try:
+        sbp_result = maybe_run_payment_before_fiscalization(
+            conn=conn,
+            draft=draft,
+            settings=settings,
+            settings_path=settings_path,
+            paths=paths,
+        )
+        if sbp_result:
+            print("Оплата СБП успешна. Продолжаю фискализацию чека.")
+    except OperatorCancelled as cancel_exc:
+        finish_inline_status()
+        db_update(
+            conn,
+            draft.external_id,
+            status="CANCELLED_BY_OPERATOR",
+            completed_at=datetime.now().isoformat(timespec="seconds"),
+            error_code="CANCELLED_BY_OPERATOR",
+            error_message=str(cancel_exc),
+        )
+        print("\nОжидание оплаты отменено оператором.")
+        print("Чек в Dreamkas НЕ отправлен.")
+        print("Возврат в главное меню.")
+        wait_key("Нажмите любую клавишу для возврата в главное меню...")
+        return 0
+    except Exception as sbp_exc:
+        db_update(
+            conn,
+            draft.external_id,
+            status="SBP_ERROR",
+            completed_at=datetime.now().isoformat(timespec="seconds"),
+            error_code="SBP_ERROR",
+            error_message=str(sbp_exc),
+        )
+        print("\nОШИБКА ОПЛАТЫ")
+        print(str(sbp_exc))
+        print("Чек в Dreamkas НЕ отправлен.")
+        logging.exception("Payment step failed")
+        wait_key()
+        return 1
+
     print("\nОтправляю чек в Dreamkas...")
     operation = send_receipt(session, api_base_url, draft, request_timeout)
     operation_id = str(operation.get("id") or draft.external_id)
@@ -2595,19 +4535,38 @@ def submit_draft(
     print(f"Операция создана: {operation_id}, статус: {status}")
 
     final_operation = operation
-    while True:
-        status = str(final_operation.get("status") or "").upper()
-        if status in {"SUCCESS", "ERROR"}:
-            break
-        print(f"Статус: {status or 'UNKNOWN'}. Следующая проверка через {poll_interval} сек.")
-        time.sleep(poll_interval)
-        final_operation = get_operation(session, api_base_url, operation_id, request_timeout)
+    print_cancel_hint()
+    try:
+        while True:
+            status = str(final_operation.get("status") or "").upper()
+            if status in {"SUCCESS", "ERROR"}:
+                break
+            print(f"Статус: {status or 'UNKNOWN'}. Следующая проверка через {poll_interval} сек.")
+            interruptible_sleep(poll_interval, "ожидание ответа Dreamkas")
+            raise_if_operator_cancelled("ожидание ответа Dreamkas")
+            final_operation = get_operation(session, api_base_url, operation_id, request_timeout)
+            db_update(
+                conn,
+                draft.external_id,
+                status=str(final_operation.get("status") or "UNKNOWN"),
+                operation_json=json.dumps(final_operation, ensure_ascii=False, indent=2),
+            )
+    except OperatorCancelled as cancel_exc:
         db_update(
             conn,
             draft.external_id,
-            status=str(final_operation.get("status") or "UNKNOWN"),
+            status="CANCELLED_BY_OPERATOR",
+            completed_at=datetime.now().isoformat(timespec="seconds"),
+            error_code="CANCELLED_BY_OPERATOR",
+            error_message=str(cancel_exc),
             operation_json=json.dumps(final_operation, ensure_ascii=False, indent=2),
         )
+        print("\nОжидание ответа Dreamkas отменено оператором.")
+        print("Возврат в главное меню.")
+        print("Важно: задание уже было отправлено в Dreamkas и может продолжить выполняться на стороне кассы.")
+        print("Перед повторной пробивкой проверьте статус этого чека, чтобы не создать дубль.")
+        wait_key("Нажмите любую клавишу для возврата в главное меню...")
+        return 0
 
     status = str(final_operation.get("status") or "").upper()
     if status == "ERROR":
@@ -2691,6 +4650,13 @@ def submit_draft(
         pdf_path=pdf_path_to_db,
     )
 
+    maybe_offer_tbank_refund_after_fiscal_refund(
+        conn=conn,
+        draft=draft,
+        settings=settings,
+        settings_path=settings_path,
+    )
+
     if excel_path is not None and bool_setting(settings, "CLEAR_EXCEL_AFTER_SUCCESS", True):
         try:
             clear_excel_template_after_success(excel_path)
@@ -2705,7 +4671,7 @@ def submit_draft(
 
     logging.info("Receipt completed: external_id=%s receipt_id=%s", draft.external_id, receipt_id)
     print("\nГотово.")
-    wait_key()
+    wait_key("Нажмите любую клавишу для возврата в главное меню...")
     return 0
 
 
@@ -2748,6 +4714,8 @@ def main() -> int:
 
         conn = init_db(db_path)
 
+        session_cashier_name = prompt_session_cashier(settings_path, settings)
+
         while True:
             poll_interval = max(10, get_int(settings, "POLL_INTERVAL_SECONDS", 20))
             mode = choose_work_mode()
@@ -2766,9 +4734,10 @@ def main() -> int:
                 continue
 
             if mode == "sale":
+                sale_meta = prompt_sale_metadata(settings_path, settings, session_cashier_name)
                 open_excel_for_user_fill(excel_path)
-                draft = read_excel_receipt(excel_path, settings)
-                return submit_draft(
+                draft = read_excel_receipt(excel_path, settings, sale_meta)
+                submit_draft(
                     conn=conn,
                     session=session,
                     api_base_url=api_base_url,
@@ -2781,14 +4750,15 @@ def main() -> int:
                     settings_path=settings_path,
                     excel_path=excel_path,
                 )
+                continue
 
             if mode == "refund":
-                draft = build_refund_draft_interactive(conn, settings)
+                draft = build_refund_draft_interactive(conn, settings, session_cashier_name)
                 if draft is None:
                     print("\nВозврат отменен. Чек НЕ отправлен.")
-                    wait_key()
-                    return 0
-                return submit_draft(
+                    wait_key("Нажмите любую клавишу для возврата в главное меню...")
+                    continue
+                submit_draft(
                     conn=conn,
                     session=session,
                     api_base_url=api_base_url,
@@ -2800,6 +4770,7 @@ def main() -> int:
                     settings=settings,
                     settings_path=settings_path,
                 )
+                continue
 
             raise ValueError("Неизвестный режим работы")
 

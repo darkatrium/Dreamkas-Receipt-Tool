@@ -1,0 +1,245 @@
+# T-Bank SBP setup / Настройка СБП T-Банк
+
+## Русская версия
+
+### Что делает интеграция
+
+Dreamkas Receipt Tool может принимать оплату через СБП с использованием интернет-эквайринга T-Банка.
+
+Сценарий:
+
+```text
+1. Оператор выбирает тип оплаты: СБП через T-Банк
+2. Программа создает платеж в T-Банке через /v2/Init
+3. Программа вызывает /v2/GetQr
+4. В терминале отображается QR-код СБП
+5. Покупатель сканирует QR в банковском приложении
+6. Программа опрашивает /v2/GetState
+7. После успешной оплаты программа отправляет чек в Dreamkas
+8. В Dreamkas платеж проводится как безналичный
+```
+
+Важно: чек в Dreamkas отправляется только после подтверждения оплаты СБП.
+
+---
+
+### Что нужно от T-Банка
+
+В личном кабинете интернет-эквайринга T-Банка нужны:
+
+```text
+TerminalKey
+Password
+```
+
+`TerminalKey` хранится в `settings.txt` открыто.
+
+`Password` хранится в `settings.txt` в зашифрованном виде:
+
+```text
+TBANK_PASSWORD_ENC = enc-v1:...
+```
+
+Пароль шифруется ключом, который строится от `DREAMKAS_TOKEN`. Поэтому папку можно переносить целиком, но если кто-то получит весь `settings.txt`, он получит и токен, и ключ для расшифровки. Это защита от случайного просмотра, а не полноценное секретное хранилище.
+
+---
+
+### Настройки
+
+```text
+TBANK_SBP_ENABLED = 1
+TBANK_TERMINAL_KEY = ваш_terminal_key
+TBANK_PASSWORD_ENC =
+TBANK_PAY_TYPE = O
+TBANK_PAYMENT_TIMEOUT_MINUTES = 10
+TBANK_POLL_INTERVAL_SECONDS = 5
+TBANK_REQUEST_TIMEOUT_SECONDS = 30
+TBANK_QR_DATA_TYPE = PAYLOAD
+TBANK_DESCRIPTION_PREFIX = Оплата заказа
+```
+
+---
+
+### Как настроить через меню программы
+
+1. Запустите:
+
+```bat
+start_dreamkas.bat
+```
+
+2. В главном меню выберите:
+
+```text
+Настройки
+```
+
+3. Затем:
+
+```text
+Настроить СБП через T-Банк
+```
+
+4. Включите СБП:
+
+```text
+TBANK_SBP_ENABLED = 1
+```
+
+5. Введите `TBANK_TERMINAL_KEY`.
+
+6. Выберите изменение пароля и введите `TBANK_PASSWORD`.
+
+7. Программа сохранит пароль в `TBANK_PASSWORD_ENC`.
+
+---
+
+### Как работает Token T-Банка
+
+Для запросов T-Банка программа формирует `Token` так:
+
+```text
+1. Берет только параметры корневого объекта запроса
+2. Не включает вложенные объекты и массивы
+3. Добавляет Password
+4. Сортирует параметры по имени
+5. Склеивает только значения
+6. Считает SHA-256
+```
+
+---
+
+### Особенности
+
+- Минимальная сумма операции по СБП — 10 рублей.
+- Для СБП программа использует `PayType = O` по умолчанию.
+- QR выводится прямо в терминале крупными блоками.
+- QR также сохраняется в папку `receipts_qr`.
+- Если оплата не подтверждена за `TBANK_PAYMENT_TIMEOUT_MINUTES`, чек в Dreamkas не отправляется.
+- Если T-Банк вернул ошибку или отказ, чек в Dreamkas не отправляется.
+- Если оплата прошла успешно, чек отправляется в Dreamkas как безналичный платеж.
+
+---
+
+### Безопасность
+
+Не публикуйте в GitHub:
+
+```text
+settings.txt
+```
+
+В нем могут быть:
+
+```text
+DREAMKAS_TOKEN
+TBANK_TERMINAL_KEY
+TBANK_PASSWORD_ENC
+DADATA_TOKEN
+SMTP_PASSWORD_ENC
+```
+
+---
+
+## English version
+
+### What the integration does
+
+Dreamkas Receipt Tool can accept SBP payments using T-Bank acquiring.
+
+Workflow:
+
+```text
+1. Operator selects payment type: SBP through T-Bank
+2. The tool creates a payment through /v2/Init
+3. The tool calls /v2/GetQr
+4. SBP QR code is shown in the terminal
+5. Buyer scans the QR code in a banking app
+6. The tool polls /v2/GetState
+7. After successful payment, the tool fiscalizes the receipt through Dreamkas
+8. Dreamkas receives the payment as cashless
+```
+
+The Dreamkas receipt is sent only after the SBP payment is confirmed.
+
+---
+
+### Required T-Bank credentials
+
+You need:
+
+```text
+TerminalKey
+Password
+```
+
+`TerminalKey` is stored in plain text.
+
+`Password` is stored encrypted:
+
+```text
+TBANK_PASSWORD_ENC = enc-v1:...
+```
+
+---
+
+### Settings
+
+```text
+TBANK_SBP_ENABLED = 1
+TBANK_TERMINAL_KEY = your_terminal_key
+TBANK_PASSWORD_ENC =
+TBANK_PAY_TYPE = O
+TBANK_PAYMENT_TIMEOUT_MINUTES = 10
+TBANK_POLL_INTERVAL_SECONDS = 5
+TBANK_REQUEST_TIMEOUT_SECONDS = 30
+TBANK_QR_DATA_TYPE = PAYLOAD
+TBANK_DESCRIPTION_PREFIX = Order payment
+```
+
+---
+
+### Security
+
+Do not commit `settings.txt` to GitHub.
+
+
+## СБП для юрлиц / ИП: обычная СБП или B2B/I2I
+
+Если покупатель выбран как `Юрлицо / ИП` и способ оплаты — `T-Банк СБП`, программа теперь спрашивает формат оплаты:
+
+```text
+1. Обычная СБП-оплата QR через интернет-эквайринг T-Банка
+2. СБП B2B/I2I — ссылка/QR для оплаты юрлицом или ИП через T-API
+```
+
+Обычная СБП работает через EACQ:
+
+```text
+/v2/Init
+/v2/GetQr
+/v2/GetState
+```
+
+B2B/I2I работает через T-API:
+
+```text
+POST https://business.tbank.ru/openapi/api/v1/b2b/qr/onetime
+GET  https://business.tbank.ru/openapi/api/v1/b2b/qr/{qrId}/info
+```
+
+Для B2B/I2I нужны отдельные настройки:
+
+```text
+TBANK_B2B_SBP_ENABLED = 1
+TBANK_B2B_API_TOKEN_ENC = ...
+TBANK_B2B_ACCOUNT_NUMBER = расчетный счет 20 или 22 цифры
+TBANK_B2B_TTL_DAYS = 1
+TBANK_B2B_VAT = 0
+TBANK_B2B_REDIRECT_URL =
+TBANK_B2B_PURPOSE_PREFIX = Оплата по счету
+```
+
+Важно: `TBANK_B2B_API_TOKEN` — это не `TerminalKey` и не пароль интернет-эквайринга. Это отдельный Bearer token T-API с правами на выставление B2B-ссылок/QR через СБП.
+
+---

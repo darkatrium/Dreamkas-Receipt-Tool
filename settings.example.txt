@@ -3,6 +3,10 @@ SHOP_ID =
 SHOP_NAME = 
 DEVICE_ID = 
 DEVICE_NAME = 
+DEFAULT_CASHIER_NAME = 
+DEFAULT_PAYMENT_TYPE = CASHLESS
+CASHLESS_PAYMENT_PROVIDER = EXTERNAL_TERMINAL
+DEFAULT_TAX_MODE = SIMPLE_WO
 
 API_BASE_URL = https://kabinet.dreamkas.ru/api
 OPERATION_TYPE = SALE
@@ -133,3 +137,88 @@ SMTP_VERIFY_CERT = 1
 # Cashier name is read from Excel and saved locally in SQLite/TXT/PDF.
 # It is NOT sent to Dreamkas /api/receipts, because API rejects "cashier".
 # If your fiscal receipt shows "Администратор", configure cashier in Dreamkas/KKT.
+
+# Legal entity buyer support
+# 1 = send FFD tags 1227/1228 to Dreamkas for legal entity / IP buyer
+# 0 = save legal buyer data locally only
+SEND_LEGAL_ENTITY_TAGS_TO_DREAMKAS = 1
+
+
+# ------------------------------------------------------------
+# Legal entity / ИП lookup by INN
+# ------------------------------------------------------------
+# If buyer type is Юрлицо / ИП and only INN is filled in Excel,
+# the tool can fetch buyer name automatically.
+LEGAL_ENTITY_LOOKUP_ENABLED = 1
+LEGAL_ENTITY_LOOKUP_PROVIDER = DADATA
+
+# DaData API token. Get it in DaData account.
+# See DADATA_SETUP.txt for registration instructions.
+DADATA_TOKEN =
+
+# MAIN = головная организация, BRANCH = филиалы
+DADATA_BRANCH_TYPE = MAIN
+
+# 1 = write found legal name back to Excel row 5
+DADATA_UPDATE_EXCEL_NAME = 1
+
+# 1 = send FFD tags 1227/1228 to Dreamkas if legal buyer is filled
+SEND_LEGAL_ENTITY_TAGS_TO_DREAMKAS = 1
+
+
+# ------------------------------------------------------------
+# T-Bank SBP payments
+# ------------------------------------------------------------
+# 0 = disabled
+# 1 = allow payment type "СБП" in terminal.
+TBANK_SBP_ENABLED = 0
+
+# Terminal key from T-Bank Internet Acquiring / T-Business.
+TBANK_TERMINAL_KEY = 
+
+# Terminal password is NOT stored in plain text.
+# Configure it in program menu: Настройки -> Настроить СБП через T-Банк.
+TBANK_PASSWORD_ENC = 
+
+# O = one-stage payment, T = two-stage payment.
+# For terminal QR payment before fiscalization, O is usually used.
+TBANK_PAY_TYPE = O
+
+# How long to wait for buyer payment.
+TBANK_PAYMENT_TIMEOUT_MINUTES = 10
+
+# How often to check payment status.
+TBANK_POLL_INTERVAL_SECONDS = 5
+
+# HTTP timeout for T-Bank API requests.
+TBANK_REQUEST_TIMEOUT_SECONDS = 30
+
+# PAYLOAD returns payment payload/deeplink data.
+# IMAGE may return SVG image, but terminal QR output uses PAYLOAD.
+TBANK_QR_DATA_TYPE = PAYLOAD
+
+# Payment description shown in banking application.
+TBANK_DESCRIPTION_PREFIX = Оплата заказа
+
+
+# ------------------------------------------------------------
+# Cashless payment provider
+# ------------------------------------------------------------
+# EXTERNAL_TERMINAL = payment is accepted on a separate bank terminal;
+# the operator confirms payment manually before fiscalization.
+#
+# TBANK_SBP = the tool creates a T-Bank SBP payment and waits for success.
+CASHLESS_PAYMENT_PROVIDER = EXTERNAL_TERMINAL
+
+
+# ------------------------------------------------------------
+# T-Bank SBP B2B/I2I via T-API
+# ------------------------------------------------------------
+# Used only for legal entity / sole proprietor buyers when operator chooses B2B/I2I.
+TBANK_B2B_SBP_ENABLED = 0
+TBANK_B2B_API_TOKEN_ENC =
+TBANK_B2B_ACCOUNT_NUMBER =
+TBANK_B2B_TTL_DAYS = 1
+TBANK_B2B_VAT = 0
+TBANK_B2B_REDIRECT_URL =
+TBANK_B2B_PURPOSE_PREFIX = Оплата по счету

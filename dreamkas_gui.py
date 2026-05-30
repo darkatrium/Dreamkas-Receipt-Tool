@@ -42,6 +42,9 @@ def create_default_excel_template(excel_path: Path) -> None:
         ("Тип оплаты", "Безнал"),
         ("Email покупателя", ""),
         ("Телефон покупателя", ""),
+        ("Тип покупателя", "Физлицо"),
+        ("Наименование юрлица / ИП", ""),
+        ("ИНН юрлица / ИП", ""),
         ("Система налогообложения", "SIMPLE_WO"),
         ("Имя кассира", ""),
         ("Наименование", "Тип (Услуга = 1 | Товар = 0)", "Количество", "Цена", "Ставка НДС (0 - Без НДС)"),
@@ -60,24 +63,24 @@ def create_default_excel_template(excel_path: Path) -> None:
     thin = Side(style="thin", color="CCCCCC")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    for row in range(1, 6):
+    for row in range(1, 9):
         ws.cell(row=row, column=1).font = Font(bold=True)
         ws.cell(row=row, column=1).fill = meta_fill
         ws.cell(row=row, column=1).border = border
         ws.cell(row=row, column=2).border = border
 
     for col in range(1, 6):
-        cell = ws.cell(row=6, column=col)
+        cell = ws.cell(row=9, column=col)
         cell.font = Font(bold=True)
         cell.fill = header_fill
         cell.border = border
         cell.alignment = Alignment(wrap_text=True, vertical="center")
 
-    for row in range(7, 57):
+    for row in range(10, 80):
         for col in range(1, 6):
             ws.cell(row=row, column=col).border = border
 
-    ws.freeze_panes = "A7"
+    ws.freeze_panes = "A10"
     wb.save(excel_path)
 
 
@@ -149,7 +152,7 @@ class App(tk.Tk):
     def _build_ui(self) -> None:
         pad = {"padx": 10, "pady": 6}
 
-        title = tk.Label(self, text="Dreamkas Receipt Tool v6.9", font=("Segoe UI", 16, "bold"))
+        title = tk.Label(self, text="Dreamkas Receipt Tool v6.13", font=("Segoe UI", 16, "bold"))
         title.pack(anchor="w", padx=14, pady=(14, 4))
 
         frame = tk.Frame(self)

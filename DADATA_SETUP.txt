@@ -1,0 +1,381 @@
+# DaData setup / Настройка DaData
+
+## Русская версия
+
+### Зачем нужна DaData
+
+В Dreamkas Receipt Tool DaData используется для автоматического заполнения наименования юрлица или ИП по ИНН.
+
+Сценарий:
+
+```text
+1. В Excel выбираем тип покупателя: Юрлицо / ИП
+2. Вводим ИНН покупателя
+3. Поле “Наименование юрлица / ИП” можно оставить пустым
+4. Программа обращается к DaData
+5. Название организации / ИП автоматически попадает в предчек, SQLite, TXT, PDF и ФФД-теги
+```
+
+---
+
+### Что нужно получить
+
+Нужен API-токен DaData.
+
+В настройках программы используется только:
+
+```text
+DADATA_TOKEN = ...
+```
+
+Secret key для текущего сценария не нужен, потому что метод поиска организации по ИНН использует заголовок:
+
+```text
+Authorization: Token ваш_токен
+```
+
+---
+
+### Как зарегистрироваться в DaData
+
+1. Откройте сайт:
+
+```text
+https://dadata.ru
+```
+
+2. Нажмите кнопку регистрации / входа.
+
+3. Зарегистрируйтесь по email.
+
+4. Подтвердите email.  
+   Если письмо не пришло, проверьте папку “Спам”.
+
+5. Войдите в личный кабинет DaData.
+
+6. Найдите раздел с API-ключами / API tokens / Профиль.
+
+7. Скопируйте API-ключ.
+
+8. Вставьте его в `settings.txt`:
+
+```text
+LEGAL_ENTITY_LOOKUP_ENABLED = 1
+LEGAL_ENTITY_LOOKUP_PROVIDER = DADATA
+DADATA_TOKEN = ваш_api_токен
+DADATA_BRANCH_TYPE = MAIN
+DADATA_UPDATE_EXCEL_NAME = 1
+```
+
+---
+
+### Настройки в settings.txt
+
+```text
+LEGAL_ENTITY_LOOKUP_ENABLED = 1
+```
+
+Включает автоматический поиск названия юрлица / ИП по ИНН.
+
+```text
+LEGAL_ENTITY_LOOKUP_PROVIDER = DADATA
+```
+
+Провайдер поиска. Сейчас поддерживается `DADATA`.
+
+```text
+DADATA_TOKEN = ваш_api_токен
+```
+
+API-токен из личного кабинета DaData.
+
+```text
+DADATA_BRANCH_TYPE = MAIN
+```
+
+Для 10-значного ИНН юридического лица ищет головную организацию.
+
+Возможные значения:
+
+```text
+MAIN
+BRANCH
+```
+
+Для ИП с 12-значным ИНН этот параметр обычно не нужен.
+
+```text
+DADATA_UPDATE_EXCEL_NAME = 1
+```
+
+Если DaData нашла название, программа запишет его обратно в Excel в строку “Наименование юрлица / ИП”.
+
+```text
+SEND_LEGAL_ENTITY_TAGS_TO_DREAMKAS = 1
+```
+
+Разрешает отправлять реквизиты покупателя в Dreamkas через ФФД-теги:
+
+```text
+1227 — покупатель / клиент
+1228 — ИНН покупателя / клиента
+```
+
+---
+
+### Как заполнить Excel для юрлица
+
+Пример:
+
+```text
+Тип покупателя:          Юрлицо
+Наименование юрлица / ИП:
+ИНН юрлица / ИП:         1651088945
+```
+
+Строку “Наименование юрлица / ИП” можно оставить пустой.
+
+После чтения Excel программа попробует найти название по ИНН и покажет:
+
+```text
+Название покупателя найдено по ИНН: ООО "..."
+```
+
+---
+
+### Как проверить
+
+1. Заполните `DADATA_TOKEN` в `settings.txt`.
+2. Запустите `start_dreamkas.bat`.
+3. Выберите режим фискализации.
+4. В Excel укажите тип покупателя `Юрлицо`.
+5. Заполните только ИНН.
+6. Сохраните Excel.
+7. Вернитесь в терминал и нажмите клавишу для вывода предчека.
+
+Если всё настроено правильно, в предчеке появится название юрлица / ИП.
+
+---
+
+### Частые ошибки
+
+#### DADATA_TOKEN не задан
+
+Сообщение:
+
+```text
+Внимание: DADATA_TOKEN не задан, название юрлица по ИНН не загружено.
+```
+
+Решение:
+
+```text
+DADATA_TOKEN = ваш_api_токен
+```
+
+---
+
+#### DaData отклонила токен
+
+Сообщение:
+
+```text
+DaData отклонила DADATA_TOKEN
+```
+
+Решение:
+
+- проверьте, что токен скопирован полностью;
+- убедитесь, что email в DaData подтверждён;
+- проверьте, не вставили ли случайно Secret key вместо API token.
+
+---
+
+#### Организация не найдена
+
+Возможные причины:
+
+- ИНН введён с ошибкой;
+- организация недавно зарегистрирована и ещё не попала в базу;
+- введён КПП вместо ИНН;
+- сервис временно недоступен.
+
+В этом случае заполните строку “Наименование юрлица / ИП” вручную.
+
+---
+
+#### Dreamkas не принял ФФД-теги
+
+Если Dreamkas вернул ошибку валидации по `tags`, можно временно отключить передачу реквизитов юрлица в Dreamkas:
+
+```text
+SEND_LEGAL_ENTITY_TAGS_TO_DREAMKAS = 0
+```
+
+Тогда реквизиты сохранятся локально в SQLite/TXT/PDF, но не попадут в фискальный чек.
+
+---
+
+### Безопасность
+
+Не публикуйте `DADATA_TOKEN` в GitHub.
+
+В `.gitignore` должен быть:
+
+```gitignore
+settings.txt
+```
+
+---
+
+## English version
+
+### Why DaData is used
+
+Dreamkas Receipt Tool uses DaData to automatically fill the legal entity / sole proprietor name by INN.
+
+Workflow:
+
+```text
+1. Select legal entity / sole proprietor buyer type in Excel
+2. Enter buyer INN
+3. Leave the buyer name empty
+4. The tool calls DaData
+5. The returned name is used in precheck, SQLite, TXT, PDF, and FFD tags
+```
+
+---
+
+### What you need
+
+You need a DaData API token.
+
+The tool uses:
+
+```text
+DADATA_TOKEN = ...
+```
+
+The secret key is not required for the current company lookup scenario because the API call uses:
+
+```text
+Authorization: Token your_token
+```
+
+---
+
+### How to register in DaData
+
+1. Open:
+
+```text
+https://dadata.ru
+```
+
+2. Click registration / sign in.
+
+3. Register with your email.
+
+4. Confirm your email address.
+
+5. Open your DaData account.
+
+6. Find API keys / API tokens / Profile.
+
+7. Copy the API token.
+
+8. Add it to `settings.txt`:
+
+```text
+LEGAL_ENTITY_LOOKUP_ENABLED = 1
+LEGAL_ENTITY_LOOKUP_PROVIDER = DADATA
+DADATA_TOKEN = your_api_token
+DADATA_BRANCH_TYPE = MAIN
+DADATA_UPDATE_EXCEL_NAME = 1
+```
+
+---
+
+### settings.txt
+
+```text
+LEGAL_ENTITY_LOOKUP_ENABLED = 1
+```
+
+Enables legal entity / sole proprietor lookup by INN.
+
+```text
+LEGAL_ENTITY_LOOKUP_PROVIDER = DADATA
+```
+
+Lookup provider. Currently supported: `DADATA`.
+
+```text
+DADATA_TOKEN = your_api_token
+```
+
+API token from DaData account.
+
+```text
+DADATA_BRANCH_TYPE = MAIN
+```
+
+For 10-digit legal entity INN, searches the main company.
+
+Possible values:
+
+```text
+MAIN
+BRANCH
+```
+
+For 12-digit sole proprietor INN, this setting is usually not required.
+
+```text
+DADATA_UPDATE_EXCEL_NAME = 1
+```
+
+Writes the found buyer name back to Excel.
+
+```text
+SEND_LEGAL_ENTITY_TAGS_TO_DREAMKAS = 1
+```
+
+Allows sending buyer details to Dreamkas as FFD tags:
+
+```text
+1227 — buyer / client
+1228 — buyer / client INN
+```
+
+---
+
+### Excel example
+
+```text
+Buyer type:          Legal entity
+Legal entity name:
+Buyer INN:           1651088945
+```
+
+The buyer name can be left empty.
+
+---
+
+### Troubleshooting
+
+If `DADATA_TOKEN` is missing or invalid, fill the buyer name manually or fix the token.
+
+If Dreamkas rejects FFD tags, set:
+
+```text
+SEND_LEGAL_ENTITY_TAGS_TO_DREAMKAS = 0
+```
+
+---
+
+### Security
+
+Do not commit `DADATA_TOKEN` to GitHub.
+
+Keep `settings.txt` in `.gitignore`.

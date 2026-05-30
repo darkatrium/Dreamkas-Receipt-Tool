@@ -1,27 +1,33 @@
 @echo off
 setlocal EnableExtensions
-title Dreamkas GUI
+title Install Python to C:\Python314
 cd /d "%~dp0"
 
-call :ensure_python
+echo ==========================================
+echo       Install Python to C:\Python314
+echo ==========================================
+echo.
+
+call :install_python_to_c
+if errorlevel 1 goto fail
+
+call :find_python
 if errorlevel 1 goto fail
 
 call :ensure_pip
 if errorlevel 1 goto fail
 
-%PYTHON_CMD% -c "import requests, openpyxl, qrcode, PIL, reportlab" >nul 2>nul
-if errorlevel 1 (
-    echo Installing missing dependencies...
-    %PYTHON_CMD% -m pip install -r requirements.txt
-    if errorlevel 1 goto fail
-)
-
-%PYTHON_CMD% "dreamkas_gui.py"
+echo.
+echo Python and pip are ready:
+echo %PYTHON_CMD%
+echo.
+pause
 exit /b 0
 
 :fail
 echo.
-echo ERROR: GUI startup failed.
+echo ERROR: Python installation/check failed.
+echo Try running this BAT as Administrator.
 pause
 exit /b 1
 

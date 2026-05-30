@@ -8,50 +8,55 @@ echo       Install Python for Dreamkas
 echo ==========================================
 echo.
 
-call :ensure_python
+call :install_python_to_c
 if errorlevel 1 goto fail
 
-echo.
-echo Python is ready:
-echo %PYTHON_CMD%
-echo.
+call :find_python
+if errorlevel 1 goto fail
 
 call :ensure_pip
 if errorlevel 1 goto fail
 
 echo.
-echo Python and pip are ready.
+echo Python and pip are ready:
+echo %PYTHON_CMD%
+echo.
 pause
 exit /b 0
 
 :fail
 echo.
 echo ERROR: Python installation/check failed.
+echo Try running this BAT as Administrator.
 pause
 exit /b 1
 
 
-:try_python
-set "TEST_CMD=%~1"
-if "%TEST_CMD%"=="" exit /b 1
-set "TEST_VERSION="
-set "TEST_MAJOR="
-set "TEST_MINOR="
-
-%TEST_CMD% -c "import sys; print(str(sys.version_info.major)+'.'+str(sys.version_info.minor)+'.'+str(sys.version_info.micro)); print(sys.executable)" > "%TEMP%\dreamkas_pycheck.txt" 2>nul
+:is_admin
+net session >nul 2>nul
 if errorlevel 1 exit /b 1
+exit /b 0
 
+
+:try_python_file
+set "TEST_FILE=%~1"
+if "%TEST_FILE%"=="" exit /b 1
+if not exist "%TEST_FILE%" exit /b 1
+
+"%TEST_FILE%" -c "import sys, encodings; print(str(sys.version_info.major)+'.'+str(sys.version_info.minor)+'.'+str(sys.version_info.micro))" > "%TEMP%\dreamkas_pycheck.txt" 2> "%TEMP%\dreamkas_pycheck_error.txt"
+if errorlevel 1 (
+    echo Python runtime check failed:
+    echo %TEST_FILE%
+    if exist "%TEMP%\dreamkas_pycheck_error.txt" type "%TEMP%\dreamkas_pycheck_error.txt"
+    exit /b 1
+)
+
+set "TEST_VERSION="
 for /f "usebackq tokens=1 delims=" %%A in ("%TEMP%\dreamkas_pycheck.txt") do (
     if not defined TEST_VERSION set "TEST_VERSION=%%A"
 )
 
 if "%TEST_VERSION%"=="" exit /b 1
-
-echo %TEST_VERSION% | findstr /r "^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$" >nul
-if errorlevel 1 (
-    set "TEST_VERSION="
-    exit /b 1
-)
 
 for /f "tokens=1,2 delims=." %%A in ("%TEST_VERSION%") do (
     set "TEST_MAJOR=%%A"
@@ -62,9 +67,8 @@ if "%TEST_MAJOR%"=="" exit /b 1
 if %TEST_MAJOR% LSS 3 exit /b 1
 if %TEST_MAJOR% EQU 3 if %TEST_MINOR% LSS 10 exit /b 1
 
-set "PYTHON_CMD=%TEST_CMD%"
+set "PYTHON_CMD=%TEST_FILE%"
 set "PYTHON_VERSION=%TEST_VERSION%"
-set "TEST_VERSION="
 exit /b 0
 
 
@@ -72,45 +76,31 @@ exit /b 0
 set "PYTHON_CMD="
 set "PYTHON_VERSION="
 
+REM 1. Main hardcoded Python path.
 if exist "C:\Python314\python.exe" (
-    call :try_python ""C:\Python314\python.exe""
+    call :try_python_file "C:\Python314\python.exe"
     if not errorlevel 1 goto python_found
 )
 
-if exist "C:\Python313\python.exe" (
-    call :try_python ""C:\Python313\python.exe""
-    if not errorlevel 1 goto python_found
+REM 2. Fallback saved path, if user created it earlier.
+if exist "python_path.txt" (
+    for /f "usebackq tokens=* delims=" %%P in ("python_path.txt") do (
+        if not "%%P"=="" (
+            call :try_python_file "%%P"
+            if not errorlevel 1 goto python_found
+        )
+    )
 )
 
-if exist "C:\Python312\python.exe" (
-    call :try_python ""C:\Python312\python.exe""
-    if not errorlevel 1 goto python_found
-)
-
-where py >nul 2>nul
-if not errorlevel 1 (
-    call :try_python "py -3.14"
-    if not errorlevel 1 goto python_found
-
-    call :try_python "py -3.13"
-    if not errorlevel 1 goto python_found
-
-    call :try_python "py -3.12"
-    if not errorlevel 1 goto python_found
-
-    call :try_python "py -3.11"
-    if not errorlevel 1 goto python_found
-
-    call :try_python "py -3"
-    if not errorlevel 1 goto python_found
-
-    call :try_python "py"
-    if not errorlevel 1 goto python_found
-)
-
-where python >nul 2>nul
-if not errorlevel 1 (
-    call :try_python "python"
+REM 3. Fallback common system paths.
+for %%P in (
+"C:\Python313\python.exe"
+"C:\Python312\python.exe"
+"%LOCALAPPDATA%\Programs\Python\Python314\python.exe"
+"%LOCALAPPDATA%\Programs\Python\Python313\python.exe"
+"%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+) do (
+    call :try_python_file "%%~P"
     if not errorlevel 1 goto python_found
 )
 
@@ -121,67 +111,232 @@ echo Python command: %PYTHON_CMD%
 echo Python version: %PYTHON_VERSION%
 %PYTHON_CMD% -c "import sys; print('Python exe: ' + sys.executable)"
 echo.
+echo %PYTHON_CMD%>python_path.txt
 exit /b 0
 
 
-:install_python
-echo Valid Python 3.10+ was not found.
-echo.
-echo Trying automatic Python installation with winget...
-echo.
+:download_python_installer
+set "PY_INSTALLER=%TEMP%\dreamkas-python-3.13.13-amd64.exe"
 
-where winget >nul 2>nul
+echo Removing old cached Python installer if it exists...
+if exist "%PY_INSTALLER%" del /f /q "%PY_INSTALLER%" >nul 2>nul
+
+echo Downloading Python installer fresh...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.13.13/python-3.13.13-amd64.exe' -OutFile $env:TEMP\dreamkas-python-3.13.13-amd64.exe -UseBasicParsing; exit 0 } catch { Write-Host $_.Exception.Message; exit 1 }"
 if errorlevel 1 (
-    echo ERROR: winget was not found.
-    echo.
-    echo Automatic Python installation is not available on this system.
-    echo Install Python manually from python.org.
-    echo During installation enable:
-    echo - pip
-    echo - Add python.exe to PATH
-    echo - Python Launcher
-    echo.
-    echo Download page:
-    echo https://www.python.org/downloads/windows/
+    echo ERROR: Could not download Python installer.
     exit /b 1
 )
 
-echo Installing Python 3.13 with winget...
-winget install --id Python.Python.3.13 -e --source winget --accept-package-agreements --accept-source-agreements
+if not exist "%PY_INSTALLER%" (
+    echo ERROR: Download finished but installer file was not created:
+    echo %PY_INSTALLER%
+    exit /b 1
+)
+
+for %%F in ("%PY_INSTALLER%") do echo Downloaded installer size: %%~zF bytes
+exit /b 0
+
+
+:download_embedded_zip
+set "EMBED_ZIP=%TEMP%\dreamkas-python-3.13.13-embed-amd64.zip"
+
+echo Removing old cached embedded Python ZIP if it exists...
+if exist "%EMBED_ZIP%" del /f /q "%EMBED_ZIP%" >nul 2>nul
+
+echo Downloading embedded Python ZIP fresh...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.13.13/python-3.13.13-embed-amd64.zip' -OutFile $env:TEMP\dreamkas-python-3.13.13-embed-amd64.zip -UseBasicParsing; exit 0 } catch { Write-Host $_.Exception.Message; exit 1 }"
 if errorlevel 1 (
+    echo ERROR: Could not download embedded Python ZIP.
+    exit /b 1
+)
+
+if not exist "%EMBED_ZIP%" (
+    echo ERROR: Download finished but embedded ZIP was not created:
+    echo %EMBED_ZIP%
+    exit /b 1
+)
+
+for %%F in ("%EMBED_ZIP%") do echo Downloaded embedded ZIP size: %%~zF bytes
+exit /b 0
+
+
+:show_installer_log
+set "PY_INSTALL_LOG=%TEMP%\dreamkas-python-install.log"
+if exist "%PY_INSTALL_LOG%" (
     echo.
-    echo Python 3.13 installation failed. Trying Python 3.12...
-    winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements
-    if errorlevel 1 (
-        echo.
-        echo ERROR: Python installation with winget failed.
-        echo Install Python manually from:
-        echo https://www.python.org/downloads/windows/
+    echo Last lines of installer log:
+    echo ------------------------------------------------------------
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Content -Path $env:TEMP\dreamkas-python-install.log -Tail 100"
+    echo ------------------------------------------------------------
+) else (
+    echo Installer log not found:
+    echo %PY_INSTALL_LOG%
+)
+exit /b 0
+
+
+:clean_c_python
+set "PY_TARGET=C:\Python314"
+if exist "%PY_TARGET%\python.exe" (
+    call :try_python_file "%PY_TARGET%\python.exe"
+    if not errorlevel 1 exit /b 0
+)
+if exist "%PY_TARGET%" (
+    echo Removing broken/incomplete folder:
+    echo %PY_TARGET%
+    rmdir /s /q "%PY_TARGET%" >nul 2>nul
+    if exist "%PY_TARGET%" (
+        echo ERROR: Could not remove %PY_TARGET%.
+        echo Run this BAT as Administrator or delete C:\Python314 manually.
         exit /b 1
     )
 )
+exit /b 0
 
-echo.
-echo Python installation finished.
-echo Trying to detect newly installed Python...
+
+:install_python_with_exe
+set "PY_TARGET=C:\Python314"
+set "PY_INSTALLER=%TEMP%\dreamkas-python-3.13.13-amd64.exe"
+set "PY_INSTALL_LOG=%TEMP%\dreamkas-python-install.log"
+
+call :download_python_installer
+if errorlevel 1 exit /b 1
+
+if exist "%PY_INSTALL_LOG%" del /f /q "%PY_INSTALL_LOG%" >nul 2>nul
+if not exist "%PY_TARGET%" mkdir "%PY_TARGET%" >nul 2>nul
+
+echo Running Python installer with explicit full feature set...
+echo TargetDir=%PY_TARGET%
+echo Log=%PY_INSTALL_LOG%
 echo.
 
-call :find_python
-if errorlevel 1 (
+REM Important: Include_exe=1 and Include_lib=1 are explicit.
+REM Without Include_exe, the installer can leave python.exe / Lib incomplete in maintenance mode.
+"%PY_INSTALLER%" /quiet InstallAllUsers=1 TargetDir="%PY_TARGET%" Include_core=1 Include_exe=1 Include_lib=1 Include_pip=1 Include_dev=0 Include_doc=0 Include_tcltk=0 Include_tools=0 Include_test=0 Include_launcher=0 InstallLauncherAllUsers=0 PrependPath=0 Shortcuts=0 /log "%PY_INSTALL_LOG%"
+
+set "INSTALL_EXIT=%ERRORLEVEL%"
+echo Python installer exit code: %INSTALL_EXIT%
+
+timeout /t 5 /nobreak >nul
+
+if not exist "%PY_TARGET%\python.exe" (
     echo.
-    echo Python was installed, but this terminal session cannot detect it yet.
-    echo Close this window and run the BAT again.
+    echo ERROR: Python installer did not create:
+    echo %PY_TARGET%\python.exe
+    call :show_installer_log
     exit /b 1
 )
 
+call :try_python_file "%PY_TARGET%\python.exe"
+if errorlevel 1 (
+    echo ERROR: Python installer created invalid Python.
+    echo Trying embedded ZIP fallback next.
+    call :show_installer_log
+    exit /b 1
+)
+
+echo C:\Python314\python.exe>python_path.txt
+echo Python installed successfully into C:\Python314
+echo.
 exit /b 0
+
+
+:install_python_embedded_to_c
+set "PY_TARGET=C:\Python314"
+set "EMBED_ZIP=%TEMP%\dreamkas-python-3.13.13-embed-amd64.zip"
+
+echo.
+echo Installing embedded Python into C:\Python314...
+echo.
+
+if exist "%PY_TARGET%" (
+    echo Removing current C:\Python314 before embedded install...
+    rmdir /s /q "%PY_TARGET%" >nul 2>nul
+)
+
+mkdir "%PY_TARGET%" >nul 2>nul
+if not exist "%PY_TARGET%" (
+    echo ERROR: Could not create C:\Python314.
+    echo Run this BAT as Administrator.
+    exit /b 1
+)
+
+call :download_embedded_zip
+if errorlevel 1 exit /b 1
+
+echo Extracting embedded Python to C:\Python314...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Expand-Archive -Path $env:TEMP\dreamkas-python-3.13.13-embed-amd64.zip -DestinationPath 'C:\Python314' -Force; exit 0 } catch { Write-Host $_.Exception.Message; exit 1 }"
+if errorlevel 1 (
+    echo ERROR: Could not extract embedded Python ZIP.
+    exit /b 1
+)
+
+REM Enable site module in python313._pth.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $pth = Get-ChildItem -Path 'C:\Python314' -Filter 'python*._pth' | Select-Object -First 1; if($pth){ (Get-Content $pth.FullName) -replace '#import site','import site' | Set-Content $pth.FullName -Encoding ASCII }; exit 0 } catch { Write-Host $_.Exception.Message; exit 1 }"
+
+if not exist "%PY_TARGET%\python.exe" (
+    echo ERROR: Embedded Python did not create C:\Python314\python.exe.
+    exit /b 1
+)
+
+call :try_python_file "%PY_TARGET%\python.exe"
+if errorlevel 1 (
+    echo ERROR: Embedded Python is invalid.
+    exit /b 1
+)
+
+echo C:\Python314\python.exe>python_path.txt
+echo Embedded Python installed successfully into C:\Python314
+echo.
+exit /b 0
+
+
+:install_python_to_c
+echo Valid Python 3.10+ was not found.
+echo.
+echo Installing Python into:
+echo C:\Python314
+echo.
+echo This is a fixed path requested for this tool.
+echo For C:\Python314 installation, Administrator rights are recommended.
+echo.
+
+call :is_admin
+if errorlevel 1 (
+    echo WARNING: This BAT is not running as Administrator.
+    echo Installation into C:\Python314 may fail.
+    echo.
+)
+
+call :clean_c_python
+if errorlevel 1 exit /b 1
+
+call :install_python_with_exe
+if not errorlevel 1 exit /b 0
+
+echo.
+echo Standard Python installer did not produce a valid Python.
+echo Switching to embedded ZIP fallback.
+echo.
+
+call :install_python_embedded_to_c
+if not errorlevel 1 exit /b 0
+
+echo.
+echo ERROR: Both installer and embedded ZIP fallback failed.
+echo.
+exit /b 1
 
 
 :ensure_python
 call :find_python
 if not errorlevel 1 exit /b 0
 
-call :install_python
+call :install_python_to_c
+if errorlevel 1 exit /b 1
+
+call :find_python
 if errorlevel 1 exit /b 1
 
 exit /b 0
@@ -216,8 +371,6 @@ if exist "%GETPIP_FILE%" del /q "%GETPIP_FILE%" >nul 2>nul
 powershell -NoProfile -ExecutionPolicy Bypass -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile $env:TEMP\get-pip.py -UseBasicParsing; exit 0 } catch { Write-Host $_.Exception.Message; exit 1 }"
 if errorlevel 1 (
     echo ERROR: Could not download get-pip.py.
-    echo Check internet connection or download manually:
-    echo https://bootstrap.pypa.io/get-pip.py
     exit /b 1
 )
 
@@ -226,12 +379,6 @@ if errorlevel 1 (
 if errorlevel 1 (
     echo.
     echo ERROR: pip installation failed even with get-pip.py.
-    echo.
-    echo Most likely this Python installation is incomplete or broken.
-    echo Recommended fix:
-    echo 1. Uninstall broken Python installations if needed.
-    echo 2. Install Python 3.12 or 3.13 from python.org.
-    echo 3. Enable "pip" and "Add python.exe to PATH".
     exit /b 1
 )
 

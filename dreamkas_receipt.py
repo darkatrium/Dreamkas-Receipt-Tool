@@ -66,7 +66,7 @@ except ImportError as exc:
 
 
 API_DEFAULT_BASE_URL = "https://kabinet.dreamkas.ru/api"
-APP_VERSION = "6.32"
+APP_VERSION = "6.33"
 DB_FILE = "dreamkas_receipts.sqlite3"
 
 DB_DIR = "db"
@@ -1159,6 +1159,30 @@ def split_buyer_contact_optional(raw: str) -> tuple[Optional[str], Optional[str]
             elif part.startswith("+"):
                 phone = part
     return email, phone
+
+
+def build_buyer_contact_attributes(buyer_email: Optional[str], buyer_phone: Optional[str]) -> dict[str, str]:
+    """
+    Формирует contacts attributes для Dreamkas.
+
+    Важно:
+    - email должен уходить только в attributes.email;
+    - телефон должен уходить только в attributes.phone.
+
+    Раньше телефон мог попадать в email, из-за чего в ОФД он отображался как
+    "Эл. адрес покупателя: +7...".
+    """
+    attributes: dict[str, str] = {}
+
+    email = str(buyer_email or "").strip()
+    phone = normalize_phone(str(buyer_phone or "").strip()) if buyer_phone else ""
+
+    if email:
+        attributes["email"] = email
+    if phone:
+        attributes["phone"] = phone
+
+    return attributes
 
 
 def split_buyer_contact(raw: str) -> tuple[Optional[str], Optional[str]]:

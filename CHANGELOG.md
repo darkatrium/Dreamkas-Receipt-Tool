@@ -1,5 +1,28 @@
 # Changelog
 
+## v6.33
+
+### Fixed
+
+- Fixed buyer phone transfer to Dreamkas attributes.
+- Phone number is now sent as `attributes.phone`.
+- Email is sent only as `attributes.email`.
+- Fixed the issue where phone number could appear in OFD as:
+
+```text
+Эл. адрес покупателя: +7...
+```
+
+### Notes
+
+Correct mapping:
+
+```text
+buyer_email → attributes.email
+buyer_phone → attributes.phone
+```
+
+
 ## v6.32
 
 ### Fixed
@@ -27,7 +50,7 @@ PATENT
 
 All notable changes to **Dreamkas Receipt Tool** are documented in this file.
 
-Current version: **v6.32**
+Current version: **v6.33**
 
 ---
 

@@ -544,37 +544,6 @@ dreamkas_receipt_template.xlsx
 
 ---
 
-## Безопасность
-
-Рекомендуется не публиковать в GitHub:
-
-```text
-settings.txt
-db/
-logs/
-receipts_txt/
-receipts_qr/
-receipts_pdf/
-```
-
-Пример `.gitignore`:
-
-```gitignore
-settings.txt
-db/
-logs/
-receipts_txt/
-receipts_qr/
-receipts_pdf/
-__pycache__/
-*.pyc
-dist/
-build/
-*.spec
-```
-
----
-
 ## Важное предупреждение
 
 Эта утилита не является официальным продуктом Dreamkas. Перед использованием в боевой работе необходимо протестировать сценарии на небольших тестовых чеках и проверить соответствие требованиям вашей бухгалтерии, ОФД и законодательства.
@@ -1114,36 +1083,6 @@ dreamkas_receipt_template.xlsx
 
 ---
 
-## Security
-
-Do not commit these files and folders to GitHub:
-
-```text
-settings.txt
-db/
-logs/
-receipts_txt/
-receipts_qr/
-receipts_pdf/
-```
-
-Example `.gitignore`:
-
-```gitignore
-settings.txt
-db/
-logs/
-receipts_txt/
-receipts_qr/
-receipts_pdf/
-__pycache__/
-*.pyc
-dist/
-build/
-*.spec
-```
-
----
 
 ## Important notice
 

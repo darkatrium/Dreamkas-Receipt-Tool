@@ -4,7 +4,7 @@ title Dreamkas Receipt Tool
 cd /d "%~dp0"
 
 echo ==========================================
-echo        Dreamkas Receipt Tool v6.25
+echo        Dreamkas Receipt Tool v6.30
 echo ==========================================
 echo.
 

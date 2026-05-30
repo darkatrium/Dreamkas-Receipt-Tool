@@ -22,13 +22,13 @@ feat: improve EXE packaging and dependency bootstrap
 ## Suggested GitHub release title
 
 ```text
-Dreamkas Receipt Tool v6.7 — EXE template restore and pip bootstrap
+Dreamkas Receipt Tool v6.30 — EXE template restore and pip bootstrap
 ```
 
 ## Suggested GitHub release notes
 
 ```markdown
-## Dreamkas Receipt Tool v6.7
+## Dreamkas Receipt Tool v6.30
 
 This release improves EXE portability and Windows dependency installation.
 

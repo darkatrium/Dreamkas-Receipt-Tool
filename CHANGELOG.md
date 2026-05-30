@@ -1,8 +1,33 @@
 # Changelog
 
+## v6.32
+
+### Fixed
+
+- Fixed Dreamkas validation error when the operator selected "Общая система налогообложения — ОСН".
+- Dreamkas API `/api/receipts` does not accept `taxMode = OSN`.
+- The utility now sends `DEFAULT` for general taxation / OSN.
+- Removed unsupported `ENVD` option from the tax mode menu.
+- Added final safety normalization before sending `taxMode` to Dreamkas:
+  - `OSN` → `DEFAULT`
+  - unsupported/unknown values → `DEFAULT`
+
+### Notes
+
+Dreamkas API validation accepts only:
+
+```text
+DEFAULT
+SIMPLE
+SIMPLE_WO
+AGRICULT
+PATENT
+```
+
+
 All notable changes to **Dreamkas Receipt Tool** are documented in this file.
 
-Current version: **v6.30**
+Current version: **v6.32**
 
 ---
 

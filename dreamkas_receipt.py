@@ -66,7 +66,7 @@ except ImportError as exc:
 
 
 API_DEFAULT_BASE_URL = "https://kabinet.dreamkas.ru/api"
-APP_VERSION = "6.30"
+APP_VERSION = "6.32"
 DB_FILE = "dreamkas_receipts.sqlite3"
 
 DB_DIR = "db"
@@ -145,6 +145,36 @@ class OperatorCancelled(DreamkasError):
     оно может продолжить выполняться на стороне кассы.
     """
     pass
+
+
+CANCEL_INPUTS = {"0", "q", "й", "quit", "exit", "esc", "отмена", "назад", "выход"}
+
+
+def is_cancel_input(raw: str) -> bool:
+    return str(raw or "").strip().lower() in CANCEL_INPUTS
+
+
+def raise_input_cancelled(stage: str = "ввод реквизитов") -> None:
+    raise OperatorCancelled(f"Оператор отменил операцию: {stage}")
+
+
+def input_or_cancel(prompt: str, *, allow_zero_as_value: bool = False, stage: str = "ввод реквизитов") -> str:
+    """
+    input() с поддержкой отмены.
+
+    По умолчанию 0/q/отмена/назад/выход отменяют операцию.
+    Для меню, где 0 является рабочим значением, используйте allow_zero_as_value=True.
+    """
+    raw = input(prompt)
+    if is_cancel_input(raw) and not (allow_zero_as_value and raw.strip() == "0"):
+        raise_input_cancelled(stage)
+    return raw
+
+
+def prompt_continue_or_cancel(message: str) -> None:
+    raw = input(message)
+    if is_cancel_input(raw):
+        raise_input_cancelled("ожидание заполнения Excel")
 
 
 def wait_key(message: str = "Нажмите любую клавишу для выхода...") -> None:
@@ -397,7 +427,7 @@ def open_excel_for_user_fill(excel_path: Path) -> None:
 
     print("\nЗаполните Excel-шаблон и сохраните его.")
     print("После сохранения вернитесь в это окно терминала.")
-    wait_key("После того как все будет сделано, нажмите любую клавишу для вывода предчека...")
+    prompt_continue_or_cancel("После того как все будет сделано, нажмите Enter для вывода предчека или 0 для отмены: ")
 
 
 
@@ -506,13 +536,11 @@ DEFAULT_SETTINGS = {
 }
 
 TAX_MODE_CHOICES: list[tuple[str, str, str]] = [
-    ("DEFAULT", "По умолчанию на кассе", "использовать систему налогообложения, настроенную в Dreamkas/на кассе"),
-    ("OSN", "Общая система налогообложения", "ОСН"),
+    ("DEFAULT", "По умолчанию / общая система на кассе", "DEFAULT; для ОСН в Dreamkas API используется именно DEFAULT"),
     ("SIMPLE", "Упрощённая система — доходы", "УСН доходы"),
     ("SIMPLE_WO", "Упрощённая система — доходы минус расходы", "УСН доходы-расходы"),
     ("AGRICULT", "Единый сельскохозяйственный налог", "ЕСХН"),
     ("PATENT", "Патентная система налогообложения", "ПСН / патент"),
-    ("ENVD", "Единый налог на вменённый доход", "ЕНВД, архивный режим"),
 ]
 
 
@@ -523,6 +551,21 @@ def tax_mode_label(value: str) -> str:
             return f"{title} ({code})"
     return value or "-"
 
+
+
+def normalize_tax_mode_for_dreamkas(value: str) -> str:
+    """
+    Финальная защита перед отправкой в Dreamkas API.
+
+    Допустимые taxMode для /api/receipts:
+    DEFAULT, SIMPLE, SIMPLE_WO, AGRICULT, PATENT.
+    """
+    value = str(value or "").strip().upper()
+    if value == "OSN":
+        return "DEFAULT"
+    if value in {"DEFAULT", "SIMPLE", "SIMPLE_WO", "AGRICULT", "PATENT"}:
+        return value
+    return "DEFAULT"
 
 def print_inline_status(message: str) -> None:
     """
@@ -966,30 +1009,33 @@ def payment_label(payment_type: str, settings: Optional[dict[str, str]] = None) 
 
 def parse_tax_mode(raw: str) -> str:
     """
-    Нормализует систему налогообложения.
+    Нормализует систему налогообложения для Dreamkas API.
 
-    Поддерживает:
-    - цифровой выбор из меню;
-    - русские названия;
-    - внутренние коды Dreamkas/старых шаблонов.
+    Dreamkas /api/receipts принимает только:
+    DEFAULT, SIMPLE, SIMPLE_WO, AGRICULT, PATENT.
+
+    Важное исправление:
+    ОСН / общая система отправляется как DEFAULT, а не как OSN.
     """
     original = str(raw or "").strip()
     text_norm = original.lower().replace("ё", "е").replace(" ", "").replace("-", "").replace("_", "")
 
     number_mapping = {
         "0": "DEFAULT",
-        "1": "OSN",
-        "2": "SIMPLE",
-        "3": "SIMPLE_WO",
-        "4": "AGRICULT",
-        "5": "PATENT",
-        "6": "ENVD",
+        "1": "SIMPLE",
+        "2": "SIMPLE_WO",
+        "3": "AGRICULT",
+        "4": "PATENT",
     }
     if text_norm in number_mapping:
         return number_mapping[text_norm]
 
     direct = original.upper().strip()
-    if direct in {"DEFAULT", "OSN", "SIMPLE", "SIMPLE_WO", "AGRICULT", "PATENT", "ENVD"}:
+    if direct == "OSN":
+        return "DEFAULT"
+    if direct == "ENVD":
+        raise ValueError("ЕНВД не поддерживается Dreamkas API для /api/receipts. Выберите DEFAULT или другую доступную СНО.")
+    if direct in {"DEFAULT", "SIMPLE", "SIMPLE_WO", "AGRICULT", "PATENT"}:
         return direct
 
     mapping = {
@@ -998,11 +1044,11 @@ def parse_tax_mode(raw: str) -> str:
         "касса": "DEFAULT",
         "какнакассе": "DEFAULT",
 
-        "осн": "OSN",
-        "общая": "OSN",
-        "общаясистема": "OSN",
-        "общаясистеманалогообложения": "OSN",
-        "osn": "OSN",
+        "осн": "DEFAULT",
+        "общая": "DEFAULT",
+        "общаясистема": "DEFAULT",
+        "общаясистеманалогообложения": "DEFAULT",
+        "osn": "DEFAULT",
 
         "усн": "SIMPLE",
         "упрощенная": "SIMPLE",
@@ -1029,12 +1075,10 @@ def parse_tax_mode(raw: str) -> str:
         "патентная": "PATENT",
         "патентнаясистема": "PATENT",
         "patent": "PATENT",
-
-        "енвд": "ENVD",
-        "вмененка": "ENVD",
-        "вмененный": "ENVD",
-        "envd": "ENVD",
     }
+
+    if text_norm in {"енвд", "вмененка", "вмененный", "envd"}:
+        raise ValueError("ЕНВД не поддерживается Dreamkas API для /api/receipts. Выберите DEFAULT или другую доступную СНО.")
 
     if text_norm in mapping:
         return mapping[text_norm]
@@ -1339,6 +1383,8 @@ def prompt_payment_type(settings_path: Path, settings: dict[str, str]) -> str:
 
     Для безнала конкретный способ приема выбирается настройкой:
     CASHLESS_PAYMENT_PROVIDER = EXTERNAL_TERMINAL / TBANK_SBP
+
+    0 / q / отмена — отмена ввода и возврат в главное меню.
     """
     current = str(settings.get("DEFAULT_PAYMENT_TYPE", "CASHLESS")).strip().upper() or "CASHLESS"
     if current == "SBP":
@@ -1350,9 +1396,12 @@ def prompt_payment_type(settings_path: Path, settings: dict[str, str]) -> str:
     print("\nТип оплаты:")
     print("  1. Наличные")
     print(f"  2. Безнал ({cashless_provider_label(provider)})")
+    print("  0. Отмена и возврат в главное меню")
     print("\nСпособ безналичной оплаты меняется в настройках: CASHLESS_PAYMENT_PROVIDER.")
     while True:
-        raw = prompt_with_default("Выберите тип оплаты", default_label)
+        raw = input_or_cancel(f"Выберите тип оплаты [{default_label}]: ", stage="выбор типа оплаты")
+        if not raw.strip():
+            raw = default_label
         if raw.strip() == "1":
             raw = "Наличные"
         elif raw.strip() == "2":
@@ -1380,10 +1429,9 @@ def prompt_payment_type(settings_path: Path, settings: dict[str, str]) -> str:
         except Exception as exc:
             print(f"Ошибка: {exc}")
 
-
 def prompt_email_contact() -> Optional[str]:
     while True:
-        raw = input("Email покупателя: ").strip()
+        raw = input_or_cancel("Email покупателя [0 = отмена]: ", stage="ввод email покупателя").strip()
         if not raw:
             return None
         email, _phone = split_buyer_contact_optional(raw)
@@ -1394,7 +1442,7 @@ def prompt_email_contact() -> Optional[str]:
 
 def prompt_phone_contact() -> Optional[str]:
     while True:
-        raw = input("Телефон покупателя: ").strip()
+        raw = input_or_cancel("Телефон покупателя [0 = отмена]: ", stage="ввод телефона покупателя").strip()
         if not raw:
             return None
         _email, phone = split_buyer_contact_optional(raw)
@@ -1410,85 +1458,97 @@ def prompt_buyer_contacts() -> tuple[Optional[str], Optional[str]]:
 
     Вариант "не указывать" удалён — для электронного чека оператор должен
     выбрать хотя бы один контакт покупателя.
+
+    0 / q / отмена — отмена ввода и возврат в главное меню.
     """
     print("\nКонтакт покупателя для электронного чека:")
     print("  1. Email")
     print("  2. Телефон")
     print("  3. Email + телефон")
+    print("  0. Отмена и возврат в главное меню")
 
     while True:
-        choice = input("Выберите вариант [1/2/3]: ").strip().lower()
+        choice = input_or_cancel("Выберите вариант [1/2/3/0]: ", stage="выбор контакта покупателя").strip().lower()
 
         if choice in {"1", "email", "e", "емайл", "почта"}:
             email = prompt_email_contact()
             if email:
                 return email, None
-            print("Email обязателен для выбранного варианта.")
+            print("Email обязателен для выбранного варианта. Введите email или 0 для отмены.")
 
         elif choice in {"2", "телефон", "phone", "p", "т"}:
             phone = prompt_phone_contact()
             if phone:
                 return None, phone
-            print("Телефон обязателен для выбранного варианта.")
+            print("Телефон обязателен для выбранного варианта. Введите телефон или 0 для отмены.")
 
         elif choice in {"3", "оба", "both", "email+phone", "email + phone", "e+p"}:
             email = prompt_email_contact()
             phone = prompt_phone_contact()
             if email and phone:
                 return email, phone
-            print("Для выбранного варианта нужно указать и email, и телефон.")
+            print("Для выбранного варианта нужно указать и email, и телефон. Введите данные или 0 для отмены.")
 
         else:
-            print("Введите 1 для email, 2 для телефона или 3 для обоих вариантов.")
+            print("Введите 1 для email, 2 для телефона, 3 для обоих вариантов или 0 для отмены.")
 
 def prompt_buyer_type_and_legal(settings: dict[str, str]) -> tuple[str, Optional[str], Optional[str]]:
     print("\nТип покупателя:")
     print("  1. Физлицо")
     print("  2. Юрлицо / ИП")
+    print("  0. Отмена и возврат в главное меню")
     while True:
-        answer = input("Выберите тип покупателя [Enter = 1]: ").strip().lower()
+        answer = input_or_cancel("Выберите тип покупателя [Enter = 1, 0 = отмена]: ", stage="выбор типа покупателя").strip().lower()
         if answer in {"", "1", "ф", "физ", "физлицо"}:
             return "INDIVIDUAL", None, None
         if answer in {"2", "ю", "юр", "юл", "юрлицо", "ип", "организация"}:
             break
-        print("Введите 1 для физлица или 2 для юрлица / ИП.")
+        print("Введите 1 для физлица, 2 для юрлица / ИП или 0 для отмены.")
 
     while True:
-        buyer_inn = normalize_buyer_inn(input("ИНН юрлица / ИП: ").strip())
+        buyer_inn = normalize_buyer_inn(input_or_cancel("ИНН юрлица / ИП [0 = отмена]: ", stage="ввод ИНН юрлица / ИП").strip())
         if buyer_inn and len(buyer_inn) in {10, 12}:
             break
         print("ИНН должен содержать 10 цифр для юрлица или 12 цифр для ИП.")
 
-    legal_name = input("Наименование юрлица / ИП [Enter = найти по ИНН]: ").strip() or None
+    legal_name_raw = input_or_cancel("Наименование юрлица / ИП [Enter = найти по ИНН, 0 = отмена]: ", stage="ввод наименования юрлица / ИП").strip()
+    legal_name = legal_name_raw or None
     if not legal_name:
         legal_name = lookup_legal_entity_name_by_inn(buyer_inn, settings)
     while not legal_name:
-        legal_name = input("Введите наименование юрлица / ИП вручную: ").strip() or None
+        legal_name = input_or_cancel("Введите наименование юрлица / ИП вручную [0 = отмена]: ", stage="ввод наименования юрлица / ИП").strip() or None
         if not legal_name:
             print("Для чека на юрлицо / ИП нужно название покупателя.")
     return "LEGAL_ENTITY", legal_name, buyer_inn
-
 
 def prompt_tax_mode(settings_path: Path, settings: dict[str, str]) -> str:
     """
     Показывает список систем налогообложения на русском языке
     и принимает выбор цифрой.
+
+    В Dreamkas API код OSN не используется — общая система отправляется как DEFAULT.
+    Здесь 0 является рабочим значением DEFAULT, поэтому для отмены используйте q / отмена / выход.
     """
     current = str(settings.get("DEFAULT_TAX_MODE", "SIMPLE_WO")).strip().upper() or "SIMPLE_WO"
+    current = normalize_tax_mode_for_dreamkas(current)
     current_label = tax_mode_label(current)
 
     print("\nСистема налогообложения:")
-    print("  0. По умолчанию на кассе / в Dreamkas")
-    print("  1. Общая система налогообложения — ОСН")
-    print("  2. Упрощённая система — доходы — УСН доходы")
-    print("  3. Упрощённая система — доходы минус расходы — УСН доходы-расходы")
-    print("  4. Единый сельскохозяйственный налог — ЕСХН")
-    print("  5. Патентная система налогообложения — ПСН / патент")
-    print("  6. Единый налог на вменённый доход — ЕНВД, архивный режим")
+    print("  0. По умолчанию на кассе / общая система — DEFAULT")
+    print("  1. Упрощённая система — доходы — УСН доходы")
+    print("  2. Упрощённая система — доходы минус расходы — УСН доходы-расходы")
+    print("  3. Единый сельскохозяйственный налог — ЕСХН")
+    print("  4. Патентная система налогообложения — ПСН / патент")
+    print("  q. Отмена и возврат в главное меню")
+    print("\nВажно: Dreamkas API не принимает отдельный код OSN. Для общей системы используется DEFAULT.")
     print(f"\nТекущее значение по умолчанию: {current_label}")
 
     while True:
-        raw = input("Выберите систему налогообложения [0/1/2/3/4/5/6, Enter = текущее]: ").strip()
+        raw = input_or_cancel(
+            "Выберите систему налогообложения [0/1/2/3/4, Enter = текущее, q = отмена]: ",
+            allow_zero_as_value=True,
+            stage="выбор системы налогообложения",
+        ).strip()
         if not raw:
             tax_mode = current
         else:
@@ -1498,11 +1558,11 @@ def prompt_tax_mode(settings_path: Path, settings: dict[str, str]) -> str:
                 print(f"Ошибка: {exc}")
                 continue
 
+        tax_mode = normalize_tax_mode_for_dreamkas(tax_mode)
         print(f"Выбрано: {tax_mode_label(tax_mode)}")
         settings["DEFAULT_TAX_MODE"] = tax_mode
         save_settings(settings_path, settings)
         return tax_mode
-
 
 def prompt_sale_metadata(settings_path: Path, settings: dict[str, str], cashier_name: str) -> ReceiptInputMeta:
     print("\nЗаполнение реквизитов нового чека")
@@ -1717,7 +1777,7 @@ def read_excel_receipt(excel_path: Path, settings: dict[str, str], meta: Optiona
         "shopId": shop_id,
         "type": operation_type,
         "timeout": timeout_minutes,
-        "taxMode": tax_mode,
+        "taxMode": normalize_tax_mode_for_dreamkas(tax_mode),
         "positions": payload_positions,
         "payments": [
             {
@@ -4734,9 +4794,15 @@ def main() -> int:
                 continue
 
             if mode == "sale":
-                sale_meta = prompt_sale_metadata(settings_path, settings, session_cashier_name)
-                open_excel_for_user_fill(excel_path)
-                draft = read_excel_receipt(excel_path, settings, sale_meta)
+                try:
+                    sale_meta = prompt_sale_metadata(settings_path, settings, session_cashier_name)
+                    open_excel_for_user_fill(excel_path)
+                    draft = read_excel_receipt(excel_path, settings, sale_meta)
+                except OperatorCancelled as cancel_exc:
+                    print(f"\nОперация отменена. {cancel_exc}")
+                    wait_key("Нажмите любую клавишу для возврата в главное меню...")
+                    continue
+
                 submit_draft(
                     conn=conn,
                     session=session,

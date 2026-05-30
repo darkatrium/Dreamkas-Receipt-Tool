@@ -22,13 +22,13 @@ feat: improve EXE packaging and dependency bootstrap
 ## Suggested GitHub release title
 
 ```text
-Dreamkas Receipt Tool v6.30 — EXE template restore and pip bootstrap
+Dreamkas Receipt Tool v6.32 — EXE template restore and pip bootstrap
 ```
 
 ## Suggested GitHub release notes
 
 ```markdown
-## Dreamkas Receipt Tool v6.30
+## Dreamkas Receipt Tool v6.32
 
 This release improves EXE portability and Windows dependency installation.
 
@@ -102,7 +102,7 @@ feat: add T-Bank SBP payment integration
 ```
 
 
-## Suggested commit for v6.30
+## Suggested commit for v6.32
 
 ```text
 feat: add cashless payment provider selection
@@ -117,7 +117,7 @@ feat: add cashless payment provider selection
 ```
 
 
-## Suggested commit for v6.30
+## Suggested commit for v6.32
 
 ```text
 feat: add local Python installer
@@ -131,7 +131,7 @@ feat: add local Python installer
 ```
 
 
-## Suggested commit for v6.30
+## Suggested commit for v6.32
 
 ```text
 fix: install local Python into LocalAppData
@@ -145,7 +145,7 @@ fix: install local Python into LocalAppData
 ```
 
 
-## Suggested commit for v6.30
+## Suggested commit for v6.32
 
 ```text
 fix: use fixed Python path C:\Python314
@@ -159,7 +159,7 @@ fix: use fixed Python path C:\Python314
 ```
 
 
-## Suggested commit for v6.30
+## Suggested commit for v6.32
 
 ```text
 fix: force fresh Python installer download
@@ -173,7 +173,7 @@ fix: force fresh Python installer download
 ```
 
 
-## Suggested commit for v6.30
+## Suggested commit for v6.32
 
 ```text
 fix: repair broken C:\Python314 installation
@@ -187,7 +187,7 @@ fix: repair broken C:\Python314 installation
 ```
 
 
-## Suggested commit for v6.30
+## Suggested commit for v6.32
 
 ```text
 fix: require buyer contact selection
@@ -200,7 +200,7 @@ fix: require buyer contact selection
 ```
 
 
-## Suggested commit for v6.30
+## Suggested commit for v6.32
 
 ```text
 feat: add tax mode menu and inline SBP status
@@ -215,7 +215,7 @@ feat: add tax mode menu and inline SBP status
 ```
 
 
-## Suggested commit for v6.30
+## Suggested commit for v6.32
 
 ```text
 feat: restore Excel dropdowns and add SBP refund offer
@@ -230,7 +230,7 @@ feat: restore Excel dropdowns and add SBP refund offer
 ```
 
 
-## Suggested commit for v6.30
+## Suggested commit for v6.32
 
 ```text
 feat: add T-Bank SBP B2B I2I mode for legal buyers
@@ -244,7 +244,7 @@ feat: add T-Bank SBP B2B I2I mode for legal buyers
 ```
 
 
-## Suggested commit for v6.30
+## Suggested commit for v6.32
 
 ```text
 feat: allow cancel during payment and fiscalization waits
@@ -256,4 +256,32 @@ feat: allow cancel during payment and fiscalization waits
 - Add ESC key cancellation during Dreamkas operation polling
 - Save cancelled waits as CANCELLED_BY_OPERATOR in SQLite
 - Return to main menu after cancellation
+```
+
+
+## Suggested commit for v6.32
+
+```text
+fix: map OSN tax mode to DEFAULT
+```
+
+```text
+- Fix Dreamkas validation error for taxMode OSN
+- Remove unsupported ENVD from tax mode menu
+- Map general taxation / OSN to DEFAULT
+- Add safety normalization for Dreamkas taxMode before API request
+```
+
+
+## Suggested commit for v6.32
+
+```text
+feat: add cancellation during receipt input
+```
+
+```text
+- Add 0/cancel option to payment, contact, and buyer type prompts
+- Add cancel support to email, phone, INN, and legal name inputs
+- Add cancel support while waiting for Excel fill
+- Return to main menu without creating a draft when input is cancelled
 ```

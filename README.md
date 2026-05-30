@@ -6,9 +6,22 @@
 
 ---
 
+## Касса Dreamkas-Ф
+
+Утилита разрабатывалась под работу с кассой **Dreamkas-Ф** и Dreamkas API.
+
+Страница кассы:
+
+```text
+https://dreamkas.ru/kassy-dreamkas/dreamkas-f/
+```
+
+
+
 ## Возможности
 
 - Фискализация чеков через Dreamkas API.
+- Ссылка на кассу Dreamkas-Ф в документации.
 - Возврат полного чека или отдельных позиций.
 - Excel-шаблон только для товарных позиций.
 - Ввод реквизитов чека через терминал.
@@ -30,6 +43,8 @@
 - Автоматическая установка Python в `C:\Python314`.
 - BAT-файлы для запуска, диагностики, установки зависимостей и сборки EXE.
 - Документация на русском и английском языках.
+
+**Важно:** через эту утилиту нельзя фискализировать прослеживаемые товары. Подробности см. в разделе “Важное ограничение: прослеживаемые товары”.
 
 ---
 
@@ -908,9 +923,28 @@ receipts_qr/
 
 ---
 
+## Важное ограничение: прослеживаемые товары
+
+Через эту утилиту **нельзя фискализировать прослеживаемые товары**.
+
+Текущая версия программы не поддерживает ввод, хранение и передачу реквизитов национальной системы прослеживаемости товаров, например:
+
+```text
+- РНПТ — регистрационный номер партии товара;
+- единица измерения прослеживаемости;
+- количество товара в единицах прослеживаемости;
+- дополнительные реквизиты, которые могут требоваться для документов по прослеживаемым товарам.
+```
+
+Если в продаже есть прослеживаемые товары, используйте штатные механизмы кассового/товароучётного ПО, ЭДО и документы, которые корректно поддерживают национальную систему прослеживаемости.
+
+Эта утилита предназначена только для обычных товаров и услуг, для которых не требуется передача реквизитов прослеживаемости.
+
+---
+
 ## Важное юридическое замечание
 
-ЧЕРЕЗ ЭТУ УТИЛИТУ НЕЛЬЗЯ ФИСКАЛИЗИРОВАТЬ ПРОСЛЕЖИВАЕМЫЕ ТОВАРЫ, утилита не заменяет кассу, ОФД или фискальный накопитель. Фискальным документом является чек, сформированный кассой и зарегистрированный через Dreamkas/ОФД.
+Эта утилита не заменяет кассу, ОФД или фискальный накопитель. Фискальным документом является чек, сформированный кассой и зарегистрированный через Dreamkas/ОФД.
 
 PDF/TXT/QR-файлы, которые создаёт программа, являются локальными копиями для архива, проверки и отправки покупателю.
 
@@ -925,6 +959,18 @@ PDF/TXT/QR-файлы, которые создаёт программа, явл�
 Current version: **v6.30**
 
 ---
+
+## Dreamkas-F cash register
+
+The utility was designed for use with the **Dreamkas-F** cash register and Dreamkas API.
+
+Cash register page:
+
+```text
+https://dreamkas.ru/kassy-dreamkas/dreamkas-f/
+```
+
+
 
 ## Features
 
@@ -1102,6 +1148,25 @@ receipts_txt/
 receipts_pdf/
 receipts_qr/
 ```
+
+---
+
+## Important limitation: traceable goods
+
+This utility **must not be used to fiscalize traceable goods**.
+
+The current version does not support entering, storing, or transmitting the attributes required for the Russian national traceability system, such as:
+
+```text
+- RNPT / registration number of the goods batch;
+- traceability unit of measure;
+- quantity in traceability units;
+- other attributes that may be required for documents related to traceable goods.
+```
+
+If the sale includes traceable goods, use accounting/cash register/EDI software that correctly supports the national traceability system.
+
+This utility is intended only for ordinary goods and services that do not require traceability attributes.
 
 ---
 

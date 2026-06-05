@@ -1,5 +1,24 @@
 # Changelog
 
+## v6.34
+
+### Fixed
+
+- Added handling for Dreamkas HTML challenge returned instead of JSON API.
+- Added browser-like `User-Agent`, `Referer`, and `Origin` headers.
+- If Dreamkas returns an HTML page with `__jhash_` / `__jua_` JavaScript challenge, the tool now:
+  - detects the challenge;
+  - reads the `__js_p_` cookie;
+  - calculates `__jhash_`;
+  - sets `__jhash_` and `__jua_` cookies;
+  - retries the API request once.
+- Improved error message when Dreamkas still returns HTML instead of JSON.
+
+### Notes
+
+This fixes cases where `/api/shops` returns HTTP 200 with HTML body instead of a JSON list of shops.
+
+
 ## v6.33
 
 ### Fixed
@@ -50,7 +69,7 @@ PATENT
 
 All notable changes to **Dreamkas Receipt Tool** are documented in this file.
 
-Current version: **v6.33**
+Current version: **v6.34**
 
 ---
 

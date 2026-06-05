@@ -66,7 +66,7 @@ except ImportError as exc:
 
 
 API_DEFAULT_BASE_URL = "https://kabinet.dreamkas.ru/api"
-APP_VERSION = "6.33"
+APP_VERSION = "6.34"
 DB_FILE = "dreamkas_receipts.sqlite3"
 
 DB_DIR = "db"
@@ -2306,13 +2306,125 @@ def db_update(conn: sqlite3.Connection, external_id: str, **fields: Any) -> None
     conn.commit()
 
 
+DREAMKAS_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0.0.0 Safari/537.36"
+)
+
+
 def dreamkas_headers(token: str) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "Accept": "application/json",
-        "User-Agent": "dreamkas-receipt-python/1.2",
+        "Accept": "application/json, text/plain, */*",
+        "User-Agent": DREAMKAS_USER_AGENT,
+        "Referer": "https://kabinet.dreamkas.ru/",
+        "Origin": "https://kabinet.dreamkas.ru",
     }
+
+
+def is_dreamkas_html_challenge(response: requests.Response) -> bool:
+    """
+    Иногда kabinet.dreamkas.ru вместо JSON API возвращает HTML-страницу
+    с JS-проверкой __jhash_ / __jua_. requests не выполняет JavaScript,
+    поэтому нужно распознать такой ответ, выставить cookies и повторить запрос.
+    """
+    content_type = str(response.headers.get("Content-Type", "")).lower()
+    body = response.text or ""
+    if "text/html" in content_type and "__jhash_" in body and "get_jhash" in body:
+        return True
+    if "<html" in body.lower() and "__jhash_" in body and "get_jhash" in body:
+        return True
+    return False
+
+
+def dreamkas_js_jhash(code: int) -> int:
+    """
+    Python-реализация JS-функции get_jhash из HTML challenge Dreamkas.
+
+    JS:
+    var x = 123456789;
+    var k = 0;
+    for (i = 0; i < 1677696; i++) {
+        x = ((x + b) ^ (x + (x % 3) + (x % 17) + b) ^ i) % 16776960;
+        if (x % 117 == 0) { k = (k + 1) % 1111; }
+    }
+    return k;
+    """
+    x = 123456789
+    k = 0
+    b = int(code)
+    for i in range(1677696):
+        x = ((x + b) ^ (x + (x % 3) + (x % 17) + b) ^ i) % 16776960
+        if x % 117 == 0:
+            k = (k + 1) % 1111
+    return k
+
+
+def quote_js_cookie_value(value: str) -> str:
+    """
+    Аналог encodeURIComponent для User-Agent в cookie __jua_.
+
+    Для этой задачи достаточно urllib.parse.quote с safe=''.
+    Импорт делаем внутри функции, чтобы не менять глобальные зависимости.
+    """
+    from urllib.parse import quote
+    return quote(value, safe="")
+
+
+def apply_dreamkas_html_challenge(session: requests.Session, response: requests.Response, url: str) -> bool:
+    """
+    Пытается пройти HTML challenge Dreamkas.
+
+    Возвращает True, если удалось найти cookie __js_p_ и выставить:
+    - __jhash_
+    - __jua_
+    """
+    if not is_dreamkas_html_challenge(response):
+        return False
+
+    js_cookie_value = None
+    js_cookie_name = None
+
+    # Cookie может прийти в response.cookies или уже оказаться в session.cookies.
+    for jar in (response.cookies, session.cookies):
+        for cookie in jar:
+            if "__js_p_" in cookie.name:
+                js_cookie_name = cookie.name
+                js_cookie_value = cookie.value
+                break
+        if js_cookie_value:
+            break
+
+    if not js_cookie_value:
+        logging.warning("Dreamkas HTML challenge detected, but __js_p_ cookie was not found.")
+        return False
+
+    parts = str(js_cookie_value).split(",")
+    try:
+        code = int(parts[0])
+        age = int(parts[1]) if len(parts) > 1 and str(parts[1]).isdigit() else 3600
+    except Exception:
+        logging.exception("Could not parse Dreamkas __js_p_ cookie: %s=%s", js_cookie_name, js_cookie_value)
+        return False
+
+    jhash = dreamkas_js_jhash(code)
+    user_agent = session.headers.get("User-Agent") or DREAMKAS_USER_AGENT
+    jua = quote_js_cookie_value(user_agent)
+
+    # Ставим cookies для домена kabinet.dreamkas.ru.
+    session.cookies.set("__jhash_", str(jhash), domain="kabinet.dreamkas.ru", path="/")
+    session.cookies.set("__jua_", jua, domain="kabinet.dreamkas.ru", path="/")
+
+    logging.info(
+        "Dreamkas HTML challenge handled: %s=%s, __jhash_=%s, max_age=%s",
+        js_cookie_name,
+        js_cookie_value,
+        jhash,
+        age,
+    )
+    return True
 
 
 def parse_api_response(response: requests.Response) -> Any:
@@ -2334,14 +2446,46 @@ def api_request(
     json_body: Optional[dict[str, Any]] = None,
 ) -> Any:
     log_json(f"REQUEST {method} {url}", json_body or {})
+
     try:
         response = session.request(method, url, json=json_body, timeout=timeout_seconds)
     except requests.RequestException as exc:
         logging.exception("Network error for %s %s", method, url)
         raise DreamkasError(f"Сетевая ошибка при запросе {method} {url}: {exc}") from exc
 
+    # Dreamkas иногда возвращает HTML challenge вместо JSON.
+    # Проходим challenge и повторяем тот же запрос один раз.
+    if is_dreamkas_html_challenge(response):
+        log_json(
+            f"RESPONSE {response.status_code} {method} {url} HTML_CHALLENGE",
+            {"raw": response.text[:1200]},
+        )
+        if apply_dreamkas_html_challenge(session, response, url):
+            time.sleep(1.1)
+            log_json(f"REQUEST RETRY AFTER HTML_CHALLENGE {method} {url}", json_body or {})
+            try:
+                response = session.request(method, url, json=json_body, timeout=timeout_seconds)
+            except requests.RequestException as exc:
+                logging.exception("Network error after Dreamkas challenge for %s %s", method, url)
+                raise DreamkasError(f"Сетевая ошибка после проверки Dreamkas {method} {url}: {exc}") from exc
+        else:
+            raise DreamkasError(
+                "Dreamkas вернул HTML-страницу проверки вместо JSON API. "
+                "Не удалось автоматически пройти проверку. Попробуйте повторить запуск через 1-2 минуты "
+                "или откройте kabinet.dreamkas.ru в браузере с этого компьютера."
+            )
+
     body = parse_api_response(response)
     log_json(f"RESPONSE {response.status_code} {method} {url}", body)
+
+    if isinstance(body, dict) and "raw" in body:
+        raw = str(body.get("raw") or "")
+        if raw.lstrip().lower().startswith("<html"):
+            raise DreamkasError(
+                "Dreamkas вернул HTML вместо JSON API. Вероятно, сработала защита сайта или временная проверка доступа. "
+                "Откройте kabinet.dreamkas.ru в браузере, затем повторите запуск программы."
+            )
+
     if response.status_code < 200 or response.status_code >= 300:
         message = None
         if isinstance(body, dict):
